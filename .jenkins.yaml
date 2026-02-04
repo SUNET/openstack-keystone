@@ -13,7 +13,7 @@ builders:
 docker_name: platform/openstack-keystone
 docker_context_dir: keystone
 docker_tags:
-  - "2025.2-ubuntu_noble-1"
+  - "2025.1-ubuntu_noble-1"
   - "latest"
 
 extra_jobs:
