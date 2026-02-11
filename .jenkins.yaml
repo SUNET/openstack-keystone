@@ -67,12 +67,12 @@ extra_jobs:
       - "2025.1-ubuntu_noble-1"
       - "latest"
 
-  # Neutron with oslo-secrets-wrapper for memcache keys
+  # Neutron with oslo-secrets-wrapper and L3 HA accept_ra fix (LP#1958149)
   - name: openstack-neutron
     builders:
       - docker
     docker_name: platform/openstack-neutron
     docker_context_dir: neutron
     docker_tags:
-      - "2025.1-ubuntu_noble-1"
+      - "2025.1-ubuntu_noble-2"
       - "latest"
