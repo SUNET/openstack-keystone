@@ -157,7 +157,7 @@ def update_network_handler(
         if not network_id:
             # No network ID, treat as create
             RECONCILE_IN_PROGRESS.labels(resource="OpenstackNetwork").dec()
-            create_network_handler(spec=spec, patch=patch, name=name)
+            create_network_handler(spec=spec, patch=patch, name=name, body=body)
             return
 
         # Check what changed - for provider networks, most changes require recreate
