@@ -10,6 +10,7 @@ from resources.provider_network import (
     delete_provider_network,
     ensure_provider_network,
     get_provider_network_info,
+    update_subnet_properties,
 )
 from state import get_openstack_client, get_registry
 from utils import now_iso
@@ -162,17 +163,33 @@ def update_network_handler(
 
         # Check what changed - for provider networks, most changes require recreate
         changed_paths = {str(change[1]) for change in diff}
-        immutable_fields = {
+        immutable_network_fields = {
             "providerNetworkType",
             "providerPhysicalNetwork",
             "providerSegmentationId",
             "external",
             "shared",
         }
+        # Subnet fields that require recreate (CIDR change = new subnet)
+        immutable_subnet_fields = {"cidr"}
 
-        needs_recreate = any(field in str(changed_paths) for field in immutable_fields)
+        needs_recreate = any(
+            field in str(changed_paths) for field in immutable_network_fields
+        )
 
-        if needs_recreate or "subnets" in str(changed_paths):
+        # Check if subnet changes are only mutable fields
+        subnet_changed = "subnets" in str(changed_paths)
+        if subnet_changed and not needs_recreate:
+            # Determine if any immutable subnet field changed
+            for change in diff:
+                path_str = str(change[1])
+                if "subnets" in path_str and any(
+                    f in path_str for f in immutable_subnet_fields
+                ):
+                    needs_recreate = True
+                    break
+
+        if needs_recreate:
             logger.info(f"Network {name} requires recreate due to property change")
             # Delete old network and subnets
             old_subnets = status.get("subnets", [])
@@ -194,6 +211,13 @@ def update_network_handler(
             patch.status["networkId"] = result["networkId"]
             patch.status["subnets"] = result.get("subnets", [])
             _set_patch_condition(patch, "NetworkReady", "True", "Recreated", "")
+        elif subnet_changed:
+            logger.info(f"Updating subnet properties in-place for {name}")
+            subnets_status = update_subnet_properties(
+                client, network_id, spec.get("subnets", [])
+            )
+            patch.status["subnets"] = subnets_status
+            _set_patch_condition(patch, "NetworkReady", "True", "Updated", "")
         else:
             _set_patch_condition(patch, "NetworkReady", "True", "Updated", "")
 

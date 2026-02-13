@@ -527,6 +527,12 @@ class OpenStackClient:
         return subnet
 
     @retry_on_error()
+    def update_subnet(self, subnet_id: str, **kwargs: object) -> Subnet:
+        """Update a subnet's mutable properties."""
+        logger.info("Updating subnet: %s with %s", subnet_id, kwargs)
+        return self.conn.network.update_subnet(subnet_id, **kwargs)
+
+    @retry_on_error()
     def delete_subnet(self, subnet_id: str) -> None:
         """Delete a subnet."""
         logger.info("Deleting subnet: %s", subnet_id)

@@ -106,6 +106,61 @@ def _ensure_subnet(
     return {"name": name, "subnetId": subnet.id}
 
 
+def update_subnet_properties(
+    client: OpenStackClient,
+    network_id: str,
+    subnet_specs: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Update mutable properties on existing subnets.
+
+    Handles changes to enableDhcp, dnsNameservers, and allocationPools
+    without requiring network recreation.
+
+    Args:
+        client: OpenStack client
+        network_id: Parent network ID
+        subnet_specs: Subnet specifications from CRD
+
+    Returns:
+        List of dicts with name and subnetId
+    """
+    results = []
+    for spec in subnet_specs:
+        name = spec["name"]
+        existing = client.get_subnet(name, network_id)
+        if not existing:
+            logger.warning(f"Subnet {name} not found for update, skipping")
+            continue
+
+        kwargs: dict[str, object] = {}
+
+        enable_dhcp = spec.get("enableDhcp", True)
+        if existing.is_dhcp_enabled != enable_dhcp:
+            kwargs["is_dhcp_enabled"] = enable_dhcp
+
+        dns = spec.get("dnsNameservers")
+        if dns is not None and existing.dns_nameservers != dns:
+            kwargs["dns_nameservers"] = dns
+
+        if "allocationPools" in spec:
+            pools = [
+                {"start": p["start"], "end": p["end"]}
+                for p in spec["allocationPools"]
+            ]
+            if existing.allocation_pools != pools:
+                kwargs["allocation_pools"] = pools
+
+        if kwargs:
+            logger.info(f"Updating subnet {name} (id={existing.id}): {kwargs}")
+            client.update_subnet(existing.id, **kwargs)
+        else:
+            logger.info(f"Subnet {name} already up to date")
+
+        results.append({"name": name, "subnetId": existing.id})
+
+    return results
+
+
 def _get_subnet_statuses(
     client: OpenStackClient,
     network_id: str,
