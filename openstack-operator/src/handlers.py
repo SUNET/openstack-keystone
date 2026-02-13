@@ -186,7 +186,7 @@ def get_federation_config(
 
 
 @kopf.on.startup()
-def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
+async def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     """Configure operator settings on startup."""
     # Reduce logging noise
     settings.posting.level = logging.WARNING
@@ -218,8 +218,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     # Start Keystone notification listener if configured
     transport_url = os.environ.get("NOTIFICATION_TRANSPORT_URL")
     if transport_url:
-        loop = asyncio.get_event_loop()
-        loop.create_task(_start_notification_listener(transport_url))
+        asyncio.create_task(_start_notification_listener(transport_url))
         logger.info("Keystone notification listener started")
     else:
         logger.info("NOTIFICATION_TRANSPORT_URL not set, notification listener disabled")
