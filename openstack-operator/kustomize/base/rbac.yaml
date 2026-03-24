@@ -15,10 +15,10 @@ rules:
     verbs: ["get", "patch", "update"]
   # Cluster-scoped CRD access (domains, flavors, images, networks)
   - apiGroups: ["sunet.se"]
-    resources: ["openstackdomains", "openstackflavors", "openstackimages", "openstacknetworks"]
+    resources: ["openstackarchivepolicies", "openstackdomains", "openstackflavors", "openstackimages", "openstacknetworks"]
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["sunet.se"]
-    resources: ["openstackdomains/status", "openstackflavors/status", "openstackimages/status", "openstacknetworks/status"]
+    resources: ["openstackarchivepolicies/status", "openstackdomains/status", "openstackflavors/status", "openstackimages/status", "openstacknetworks/status"]
     verbs: ["get", "patch", "update"]
   # Required for Kopf to discover CRDs
   - apiGroups: ["apiextensions.k8s.io"]

@@ -5,6 +5,7 @@ This package contains handlers for:
 - OpenstackFlavor
 - OpenstackImage
 - OpenstackNetwork (provider networks)
+- OpenstackArchivePolicy
 
 All handlers follow the same patterns:
 - Create/update/delete via Kopf decorators
@@ -13,6 +14,7 @@ All handlers follow the same patterns:
 """
 
 # Import handlers to register them with Kopf
+from handlers.archive_policy import *  # noqa: F401, F403
 from handlers.domain import *  # noqa: F401, F403
 from handlers.flavor import *  # noqa: F401, F403
 from handlers.image import *  # noqa: F401, F403

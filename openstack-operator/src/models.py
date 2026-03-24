@@ -232,6 +232,22 @@ class ProviderSubnetSpec(TypedDict):
     ipv6AddressMode: NotRequired[str]
 
 
+class ArchivePolicyDefinitionSpec(TypedDict):
+    """Single archive policy definition rule."""
+
+    granularity: str
+    timespan: str
+
+
+class OpenstackArchivePolicySpec(TypedDict):
+    """Full OpenstackArchivePolicy CRD spec."""
+
+    name: str
+    definition: list[ArchivePolicyDefinitionSpec]
+    aggregationMethods: list[str]
+    backWindow: NotRequired[int]
+
+
 class OpenstackNetworkSpec(TypedDict):
     """Full OpenstackNetwork CRD spec (provider networks)."""
 

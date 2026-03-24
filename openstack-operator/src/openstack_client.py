@@ -55,6 +55,7 @@ def _get_service_from_func_name(func_name: str) -> str:
         "compute_quota": "compute",
         "volume_quota": "block_storage",
         "network_quota": "network",
+        "archive_policy": "metric",
     }
     func_lower = func_name.lower()
     for prefix, service in service_prefixes.items():
@@ -1087,3 +1088,68 @@ class OpenStackClient:
             kwargs["ipv6_address_mode"] = ipv6_address_mode
 
         return self.conn.network.create_subnet(**kwargs)
+
+    # -------------------------------------------------------------------------
+    # Gnocchi / Metric operations
+    # -------------------------------------------------------------------------
+
+    def _gnocchi_url(self) -> str:
+        """Get the Gnocchi API base URL from the service catalog."""
+        endpoint = self.conn.session.get_endpoint(service_type="metric")
+        return endpoint.rstrip("/")
+
+    @retry_on_error()
+    def get_archive_policy(self, name: str) -> dict | None:
+        """Get an archive policy by name."""
+        url = f"{self._gnocchi_url()}/v1/archive_policy/{name}"
+        resp = self.conn.session.get(url)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    @retry_on_error()
+    def create_archive_policy(
+        self,
+        name: str,
+        definition: list[dict],
+        aggregation_methods: list[str],
+        back_window: int = 0,
+    ) -> dict:
+        """Create a new archive policy."""
+        logger.info("Creating archive policy: %s", name)
+        url = f"{self._gnocchi_url()}/v1/archive_policy"
+        body = {
+            "name": name,
+            "definition": definition,
+            "aggregation_methods": aggregation_methods,
+            "back_window": back_window,
+        }
+        resp = self.conn.session.post(url, json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    @retry_on_error()
+    def update_archive_policy(self, name: str, definition: list[dict]) -> dict:
+        """Update an archive policy's definition rules.
+
+        Note: Gnocchi PATCH can add new rules but cannot change
+        aggregation_methods or remove rules used by metrics.
+        """
+        logger.info("Updating archive policy: %s", name)
+        url = f"{self._gnocchi_url()}/v1/archive_policy/{name}"
+        body = {"definition": definition}
+        resp = self.conn.session.patch(url, json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    @retry_on_error()
+    def delete_archive_policy(self, name: str) -> None:
+        """Delete an archive policy."""
+        logger.info("Deleting archive policy: %s", name)
+        url = f"{self._gnocchi_url()}/v1/archive_policy/{name}"
+        resp = self.conn.session.delete(url)
+        if resp.status_code == 404:
+            logger.debug("Archive policy %s already deleted", name)
+            return
+        resp.raise_for_status()

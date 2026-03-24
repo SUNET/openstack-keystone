@@ -13,6 +13,7 @@ resources:
   - networkpolicy.yaml
   # Uncomment if using Prometheus Operator
   # - servicemonitor.yaml
+  - ../../crds/openstackarchivepolicy_crd.yaml
   - ../../crds/openstackproject_crd.yaml
   - ../../crds/openstackdomain_crd.yaml
   - ../../crds/openstackflavor_crd.yaml

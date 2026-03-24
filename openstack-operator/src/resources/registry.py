@@ -19,6 +19,7 @@ CONFIGMAP_NAMESPACE = "openstack-operator"
 
 # Resource type keys for the ConfigMap data
 RESOURCE_TYPES = [
+    "archive_policies",
     "domains",
     "flavors",
     "images",

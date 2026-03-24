@@ -1,0 +1,117 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: openstackarchivepolicies.sunet.se
+spec:
+  group: sunet.se
+  names:
+    kind: OpenstackArchivePolicy
+    listKind: OpenstackArchivePolicyList
+    plural: openstackarchivepolicies
+    singular: openstackarchivepolicy
+    shortNames:
+      - osap
+      - osarchivepolicy
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Policy
+          type: string
+          jsonPath: .spec.name
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - name
+                - definition
+                - aggregationMethods
+              properties:
+                name:
+                  type: string
+                  description: "Gnocchi archive policy name"
+                  minLength: 1
+                  maxLength: 255
+                definition:
+                  type: array
+                  description: "Archive policy definition rules"
+                  items:
+                    type: object
+                    required:
+                      - granularity
+                      - timespan
+                    properties:
+                      granularity:
+                        type: string
+                        description: "Aggregation granularity (e.g. 5m, 1h, 1d)"
+                      timespan:
+                        type: string
+                        description: "Data retention timespan (e.g. 30d, 400d)"
+                aggregationMethods:
+                  type: array
+                  description: "Aggregation methods to compute"
+                  items:
+                    type: string
+                backWindow:
+                  type: integer
+                  description: "Number of periods to allow late data points"
+                  minimum: 0
+                  default: 0
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Ready
+                    - Error
+                    - Deleting
+                  description: "Current phase of the archive policy"
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer
+                  description: "Generation observed by the controller"
+                lastSyncTime:
+                  type: string
+                  format: date-time
+                  description: "Last time the resource was synced"
