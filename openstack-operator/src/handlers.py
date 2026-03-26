@@ -328,11 +328,12 @@ def create_project(
 
         description = spec.get("description", "")
         enabled = spec.get("enabled", True)
+        contract_number = spec.get("contractNumber")
 
         # 1. Create project and group
         _set_patch_condition(patch, "ProjectReady", "False", "Creating", "")
         project_id, group_id = ensure_project(
-            client, project_name, domain, description, enabled
+            client, project_name, domain, description, enabled, contract_number
         )
         patch.status["projectId"] = project_id
         patch.status["groupId"] = group_id
@@ -483,6 +484,12 @@ def update_project(
             description = spec.get("description", "")
             enabled = spec.get("enabled", True)
             client.update_project(project_id, description=description, enabled=enabled)
+
+        # Update contract number tag if changed
+        if any("contractNumber" in str(p) for p in changed_paths):
+            contract_number = spec.get("contractNumber")
+            if contract_number:
+                client.add_project_tag(project_id, f"contract:{contract_number}")
 
         # Update quotas if changed
         if any("quotas" in str(p) for p in changed_paths):

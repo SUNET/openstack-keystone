@@ -27,6 +27,9 @@ spec:
         - name: Domain
           type: string
           jsonPath: .spec.domain
+        - name: Contract
+          type: string
+          jsonPath: .spec.contractNumber
         - name: Phase
           type: string
           jsonPath: .status.phase
@@ -62,6 +65,11 @@ spec:
                   type: boolean
                   description: "Whether the project is enabled"
                   default: true
+
+                contractNumber:
+                  type: string
+                  description: "Contract number for billing"
+                  pattern: "^[A-Za-z0-9-]+$"
 
                 quotas:
                   type: object

@@ -16,6 +16,7 @@ def ensure_project(
     domain: str,
     description: str = "",
     enabled: bool = True,
+    contract_number: str | None = None,
 ) -> tuple[str, str]:
     """Ensure a project and its user group exist.
 
@@ -36,6 +37,11 @@ def ensure_project(
         project_id = project.id
         client.add_project_tag(project_id, MANAGED_BY_TAG)
         logger.info(f"Created project {name} with ID {project_id}")
+
+    # Set contract number tag for billing
+    if contract_number:
+        client.add_project_tag(project_id, f"contract:{contract_number}")
+        logger.info(f"Set contract tag contract:{contract_number} on project {name}")
 
     # Ensure group exists for project users
     group_name = make_group_name(name)

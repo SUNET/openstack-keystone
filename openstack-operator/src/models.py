@@ -153,6 +153,7 @@ class OpenstackProjectSpec(TypedDict):
     domain: str
     description: NotRequired[str]
     enabled: NotRequired[bool]
+    contractNumber: NotRequired[str]
     quotas: NotRequired[QuotaSpec]
     networks: NotRequired[list[NetworkSpec]]
     securityGroups: NotRequired[list[SecurityGroupSpec]]
