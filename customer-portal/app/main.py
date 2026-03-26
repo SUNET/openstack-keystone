@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import get_current_user, get_user_contracts, init_oauth, oauth
 from app.config import Settings, get_settings
-from app.db import close_db, get_session, init_db
+from app.db import close_db, get_session, init_db, run_migrations
 from app.git_backend import GitBackend
 from app.k8s import init_k8s
 from app.routers import admin, projects
@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
 
-    # Initialize database
+    # Initialize database and run migrations
     init_db(settings.database_url)
+    await run_migrations(settings.database_url)
     logger.info("Database initialized")
 
     # Initialize git backend
