@@ -13,9 +13,24 @@ _engine = None
 _session_factory = None
 
 
+def _to_async_url(url: str) -> str:
+    """Convert a postgresql:// URL to postgresql+asyncpg://."""
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def _to_sync_url(url: str) -> str:
+    """Convert a database URL to a sync psycopg2 URL for Alembic."""
+    url = url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
 def init_db(database_url: str) -> None:
     global _engine, _session_factory
-    _engine = create_async_engine(database_url, echo=False)
+    _engine = create_async_engine(_to_async_url(database_url), echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 
@@ -25,9 +40,7 @@ async def run_migrations(database_url: str) -> None:
     app_dir = Path(__file__).parent.parent
     alembic_cfg = AlembicConfig(str(app_dir / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(app_dir / "alembic"))
-    # Convert async URL to sync for Alembic
-    sync_url = database_url.replace("+asyncpg", "+psycopg2")
-    alembic_cfg.set_main_option("sqlalchemy.url", sync_url)
+    alembic_cfg.set_main_option("sqlalchemy.url", _to_sync_url(database_url))
     alembic_command.upgrade(alembic_cfg, "head")
     logger.info("Database migrations applied")
 
