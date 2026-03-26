@@ -34,9 +34,8 @@ def init_db(database_url: str) -> None:
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 
-async def run_migrations(database_url: str) -> None:
-    """Run Alembic migrations to head on startup."""
-    # Alembic runs synchronously, but that's fine at startup
+def run_migrations(database_url: str) -> None:
+    """Run Alembic migrations to head on startup (sync — runs before event loop)."""
     app_dir = Path(__file__).parent.parent
     alembic_cfg = AlembicConfig(str(app_dir / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(app_dir / "alembic"))

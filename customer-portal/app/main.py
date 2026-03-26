@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize database and run migrations
     init_db(settings.database_url)
-    await run_migrations(settings.database_url)
+    run_migrations(settings.database_url)
     logger.info("Database initialized")
 
     # Initialize git backend
