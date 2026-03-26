@@ -26,6 +26,17 @@ extra_jobs:
       - "0.1.0"
       - "latest"
 
+  # Customer self-service portal
+  - name: customer-portal
+    builders:
+      - docker
+    docker_name: platform/customer-portal
+    docker_context_dir: customer-portal
+    docker_no_cache: true
+    docker_tags:
+      - "0.1.0"
+      - "latest"
+
   # Libvirt with QEMU SPICE support
   - name: openstack-libvirt
     builders:
