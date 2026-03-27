@@ -354,7 +354,7 @@ textarea { resize: vertical; min-height: 80px; }
   border-bottom: none;
 }
 
-.user-list .user-email {
+.user-list .user-sub {
   font-size: 0.95rem;
   min-width: 0;
   overflow: hidden;

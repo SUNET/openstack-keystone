@@ -1,21 +1,35 @@
-"""Admin endpoints for managing customers, contracts, and access."""
+"""Admin endpoints for managing customers, contracts, access, and pricing."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth import require_admin
 from app.db import get_session
-from app.models import Contract, ContractAccess, Customer
+from app.models import (
+    Contract,
+    ContractAccess,
+    ContractPriceOverride,
+    ContractRebate,
+    Customer,
+    ResourcePrice,
+)
 from app.schemas import (
     ContractDetailResponse,
+    ContractPriceOverrideRequest,
+    ContractPriceOverrideResponse,
+    ContractRebateRequest,
     ContractResponse,
     CreateContractRequest,
     CreateCustomerRequest,
     CustomerDetailResponse,
     CustomerResponse,
     GrantAccessRequest,
+    ResourcePriceRequest,
+    ResourcePriceResponse,
+    UpdateContractRequest,
+    UpdateCustomerRequest,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -67,6 +81,71 @@ async def get_customer(
     return customer
 
 
+@router.patch("/customers/{customer_id}", response_model=CustomerResponse)
+async def update_customer(
+    customer_id: int,
+    req: UpdateCustomerRequest,
+    request: Request,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    customer = await session.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if req.domain is not None and req.domain != customer.domain:
+        # Check if any projects exist under this customer's contracts
+        git_backend = request.app.state.git_backend
+        contracts = await session.execute(
+            select(Contract).where(Contract.customer_id == customer_id)
+        )
+        for contract in contracts.scalars():
+            projects = git_backend.list_projects(contract.contract_number)
+            if projects:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot change domain while projects exist",
+                )
+        customer.domain = req.domain
+
+    if req.name is not None:
+        if req.name != customer.name:
+            existing = await session.execute(
+                select(Customer).where(Customer.name == req.name)
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="Customer name already exists")
+            customer.name = req.name
+
+    if req.description is not None:
+        customer.description = req.description
+
+    await session.commit()
+    await session.refresh(customer)
+    return customer
+
+
+@router.delete("/customers/{customer_id}", status_code=204)
+async def delete_customer(
+    customer_id: int,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    customer = await session.execute(
+        select(Customer)
+        .where(Customer.id == customer_id)
+        .options(selectinload(Customer.contracts))
+    )
+    customer = customer.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.contracts:
+        raise HTTPException(status_code=409, detail="Cannot delete customer with contracts")
+
+    await session.delete(customer)
+    await session.commit()
+
+
 # --- Contracts ---
 
 
@@ -85,12 +164,10 @@ async def create_contract(
     _user=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    # Verify customer exists
     customer = await session.get(Customer, req.customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    # Check uniqueness
     existing = await session.execute(
         select(Contract).where(Contract.contract_number == req.contract_number)
     )
@@ -117,7 +194,11 @@ async def get_contract(
     result = await session.execute(
         select(Contract)
         .where(Contract.id == contract_id)
-        .options(selectinload(Contract.customer), selectinload(Contract.access_grants))
+        .options(
+            selectinload(Contract.customer),
+            selectinload(Contract.access_grants),
+            selectinload(Contract.rebate),
+        )
     )
     contract = result.scalar_one_or_none()
     if not contract:
@@ -129,9 +210,51 @@ async def get_contract(
         contract_number=contract.contract_number,
         description=contract.description,
         created_at=contract.created_at,
+        updated_at=contract.updated_at,
         customer=contract.customer,
         users=[g.user_sub for g in contract.access_grants],
+        rebate_percent=contract.rebate.rebate_percent if contract.rebate else None,
     )
+
+
+@router.patch("/contracts/{contract_id}", response_model=ContractResponse)
+async def update_contract(
+    contract_id: int,
+    req: UpdateContractRequest,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    if req.description is not None:
+        contract.description = req.description
+
+    await session.commit()
+    await session.refresh(contract)
+    return contract
+
+
+@router.delete("/contracts/{contract_id}", status_code=204)
+async def delete_contract(
+    contract_id: int,
+    request: Request,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    # Check if contract has projects in git
+    git_backend = request.app.state.git_backend
+    projects = git_backend.list_projects(contract.contract_number)
+    if projects:
+        raise HTTPException(status_code=409, detail="Cannot delete contract with projects")
+
+    await session.delete(contract)
+    await session.commit()
 
 
 # --- Contract Access ---
@@ -181,4 +304,192 @@ async def revoke_access(
         raise HTTPException(status_code=404, detail="Access grant not found")
 
     await session.delete(grant)
+    await session.commit()
+
+
+# --- Global Pricing ---
+
+
+@router.get("/pricing", response_model=list[ResourcePriceResponse])
+async def list_prices(
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ResourcePrice).order_by(ResourcePrice.resource_type)
+    )
+    return result.scalars().all()
+
+
+@router.put("/pricing/{resource_type}", response_model=ResourcePriceResponse)
+async def set_price(
+    resource_type: str,
+    req: ResourcePriceRequest,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Set or update the global price for a resource type."""
+    result = await session.execute(
+        select(ResourcePrice).where(ResourcePrice.resource_type == resource_type)
+    )
+    price = result.scalar_one_or_none()
+
+    if price:
+        price.unit_price = req.unit_price
+        price.unit = req.unit
+    else:
+        price = ResourcePrice(
+            resource_type=req.resource_type,
+            unit_price=req.unit_price,
+            unit=req.unit,
+        )
+        session.add(price)
+
+    await session.commit()
+    await session.refresh(price)
+    return price
+
+
+@router.delete("/pricing/{resource_type}", status_code=204)
+async def delete_price(
+    resource_type: str,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ResourcePrice).where(ResourcePrice.resource_type == resource_type)
+    )
+    price = result.scalar_one_or_none()
+    if not price:
+        raise HTTPException(status_code=404, detail="Price not found")
+
+    await session.delete(price)
+    await session.commit()
+
+
+# --- Contract Price Overrides ---
+
+
+@router.get(
+    "/contracts/{contract_id}/pricing",
+    response_model=list[ContractPriceOverrideResponse],
+)
+async def list_contract_prices(
+    contract_id: int,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ContractPriceOverride)
+        .where(ContractPriceOverride.contract_id == contract_id)
+        .order_by(ContractPriceOverride.resource_type)
+    )
+    return result.scalars().all()
+
+
+@router.put(
+    "/contracts/{contract_id}/pricing/{resource_type}",
+    response_model=ContractPriceOverrideResponse,
+)
+async def set_contract_price(
+    contract_id: int,
+    resource_type: str,
+    req: ContractPriceOverrideRequest,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    result = await session.execute(
+        select(ContractPriceOverride).where(
+            ContractPriceOverride.contract_id == contract_id,
+            ContractPriceOverride.resource_type == resource_type,
+        )
+    )
+    override = result.scalar_one_or_none()
+
+    if override:
+        override.unit_price = req.unit_price
+    else:
+        override = ContractPriceOverride(
+            contract_id=contract_id,
+            resource_type=req.resource_type,
+            unit_price=req.unit_price,
+        )
+        session.add(override)
+
+    await session.commit()
+    await session.refresh(override)
+    return override
+
+
+@router.delete("/contracts/{contract_id}/pricing/{resource_type}", status_code=204)
+async def delete_contract_price(
+    contract_id: int,
+    resource_type: str,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ContractPriceOverride).where(
+            ContractPriceOverride.contract_id == contract_id,
+            ContractPriceOverride.resource_type == resource_type,
+        )
+    )
+    override = result.scalar_one_or_none()
+    if not override:
+        raise HTTPException(status_code=404, detail="Price override not found")
+
+    await session.delete(override)
+    await session.commit()
+
+
+# --- Contract Rebates ---
+
+
+@router.put("/contracts/{contract_id}/rebate")
+async def set_rebate(
+    contract_id: int,
+    req: ContractRebateRequest,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    contract = await session.get(Contract, contract_id)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    result = await session.execute(
+        select(ContractRebate).where(ContractRebate.contract_id == contract_id)
+    )
+    rebate = result.scalar_one_or_none()
+
+    if rebate:
+        rebate.rebate_percent = req.rebate_percent
+    else:
+        rebate = ContractRebate(
+            contract_id=contract_id,
+            rebate_percent=req.rebate_percent,
+        )
+        session.add(rebate)
+
+    await session.commit()
+    return {"rebate_percent": float(req.rebate_percent)}
+
+
+@router.delete("/contracts/{contract_id}/rebate", status_code=204)
+async def delete_rebate(
+    contract_id: int,
+    _user=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ContractRebate).where(ContractRebate.contract_id == contract_id)
+    )
+    rebate = result.scalar_one_or_none()
+    if not rebate:
+        raise HTTPException(status_code=404, detail="Rebate not found")
+
+    await session.delete(rebate)
     await session.commit()

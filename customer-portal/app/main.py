@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import git
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -62,7 +63,7 @@ _settings = get_settings()
 app.add_middleware(SessionMiddleware, secret_key=_settings.secret_key)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[_settings.base_url] if _settings.base_url else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +72,17 @@ app.add_middleware(
 # Include routers
 app.include_router(admin.router)
 app.include_router(projects.router)
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(git.GitCommandError)
+async def git_error_handler(request: Request, exc: git.GitCommandError):
+    logger.error("Git operation failed: %s", exc)
+    return JSONResponse(status_code=503, content={"detail": "Git operation failed, please try again"})
 
 
 @app.get("/healthz")

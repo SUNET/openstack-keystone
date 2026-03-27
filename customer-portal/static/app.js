@@ -8,18 +8,15 @@ let currentUser = null;
 
 // --- Router ---
 
-function navigate(hash) {
-    location.hash = hash;
-}
+function navigate(hash) { location.hash = hash; }
 
-function currentRoute() {
-    return location.hash.replace(/^#\/?/, "");
-}
+function currentRoute() { return location.hash.replace(/^#\/?/, ""); }
 
 async function route() {
     if (!currentUser) {
         try {
             currentUser = await api("/api/me");
+            if (!currentUser) { renderLogin(); return; }
             renderNav();
         } catch {
             renderLogin();
@@ -31,26 +28,30 @@ async function route() {
     const parts = path.split("/").filter(Boolean);
 
     // Customer routes
-    if (parts[0] === "contracts" && parts[2] === "projects" && parts[3] === "new") {
+    if (parts[0] === "contracts" && parts[2] === "projects" && parts[3] === "new")
         return renderCreateProject(decodeURIComponent(parts[1]));
-    }
-    if (parts[0] === "contracts" && parts[2] === "projects") {
+    if (parts[0] === "contracts" && parts[2] === "projects" && parts[3] === "edit" && parts[4])
+        return renderEditProject(decodeURIComponent(parts[1]), decodeURIComponent(parts[4]));
+    if (parts[0] === "contracts" && parts[2] === "projects" && parts[3])
+        return renderProjectDetail(decodeURIComponent(parts[1]), decodeURIComponent(parts[3]));
+    if (parts[0] === "contracts" && parts[2] === "projects")
         return renderContractProjects(decodeURIComponent(parts[1]));
-    }
-    if (parts[0] === "contracts" || !path) {
+    if (parts[0] === "contracts" || !path)
         return renderContracts();
-    }
 
     // Admin routes
-    if (parts[0] === "admin" && parts[1] === "contracts" && parts[2]) {
+    if (parts[0] === "admin" && parts[1] === "pricing")
+        return renderAdminPricing();
+    if (parts[0] === "admin" && parts[1] === "contracts" && parts[2] === "edit" && parts[3])
+        return renderAdminEditContract(parts[3]);
+    if (parts[0] === "admin" && parts[1] === "contracts" && parts[2])
         return renderAdminContractDetail(parts[2]);
-    }
-    if (parts[0] === "admin" && parts[1] === "customers" && parts[2]) {
+    if (parts[0] === "admin" && parts[1] === "customers" && parts[2] === "edit" && parts[3])
+        return renderAdminEditCustomer(parts[3]);
+    if (parts[0] === "admin" && parts[1] === "customers" && parts[2])
         return renderAdminCustomerDetail(parts[2]);
-    }
-    if (parts[0] === "admin") {
+    if (parts[0] === "admin")
         return renderAdminCustomers();
-    }
 
     renderContracts();
 }
@@ -64,11 +65,7 @@ async function api(path, opts = {}) {
         headers: { "Content-Type": "application/json", ...opts.headers },
         ...opts,
     });
-    if (resp.status === 401) {
-        currentUser = null;
-        renderLogin();
-        return null;
-    }
+    if (resp.status === 401) { currentUser = null; renderLogin(); return null; }
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ detail: resp.statusText }));
         throw new Error(err.detail || "Request failed");
@@ -101,11 +98,10 @@ function breadcrumbs(...items) {
     const bc = h("nav", { className: "breadcrumbs" });
     items.forEach((item, i) => {
         if (i > 0) bc.appendChild(h("span", { className: "sep" }, "/"));
-        if (i < items.length - 1 && item.hash) {
+        if (i < items.length - 1 && item.hash)
             bc.appendChild(h("a", { href: "#/" + item.hash }, item.label));
-        } else {
+        else
             bc.appendChild(h("span", { className: "current" }, item.label));
-        }
     });
     return bc;
 }
@@ -131,8 +127,9 @@ function renderNav() {
     nav.appendChild(h("a", { href: "#/contracts" }, "My Contracts"));
     if (currentUser.is_admin) {
         nav.appendChild(h("a", { href: "#/admin" }, "Admin"));
+        nav.appendChild(h("a", { href: "#/admin/pricing" }, "Pricing"));
     }
-    nav.appendChild(h("a", { href: "#", className: "nav-user" }, currentUser.email || currentUser.sub));
+    nav.appendChild(h("a", { href: "#", className: "nav-user" }, currentUser.sub));
     nav.appendChild(h("a", { href: "/auth/logout", className: "nav-logout" }, "Sign out"));
 }
 
@@ -149,16 +146,16 @@ function renderLogin() {
     );
 }
 
-// --- Customer views: Contracts ---
+// ========== CUSTOMER VIEWS ==========
 
 async function renderContracts() {
     clear(app);
     app.appendChild(breadcrumbs({ label: "My Contracts" }));
     app.appendChild(h("h2", {}, "My Contracts"));
     app.appendChild(h("p", { className: "page-desc" }, "Select a contract to view and manage its projects."));
-
     try {
         const user = await api("/api/me");
+        if (!user) return;
         currentUser = user;
         renderNav();
         if (!user.contracts.length) {
@@ -177,19 +174,13 @@ async function renderContracts() {
                 )
             );
         }
-    } catch (e) {
-        showAlert(e.message);
-    }
+    } catch (e) { showAlert(e.message); }
 }
-
-// --- Customer views: Projects under a contract ---
 
 async function renderContractProjects(contractNumber) {
     clear(app);
-
     const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
     const customerName = contractInfo ? contractInfo.customer.name : "";
-    const customerDomain = contractInfo ? contractInfo.customer.domain : "";
     const cn = encodeURIComponent(contractNumber);
 
     app.appendChild(breadcrumbs(
@@ -198,10 +189,7 @@ async function renderContractProjects(contractNumber) {
     ));
     app.appendChild(h("h2", {}, "Projects"));
     app.appendChild(h("p", { className: "page-desc" }, customerName + " — " + contractNumber));
-
-    app.appendChild(
-        h("a", { href: `#/contracts/${cn}/projects/new`, className: "btn btn-primary btn-small", style: "display:inline-block;margin-bottom:16px;text-decoration:none" }, "+ New Project")
-    );
+    app.appendChild(h("a", { href: `#/contracts/${cn}/projects/new`, className: "btn btn-primary btn-small", style: "display:inline-block;margin-bottom:16px;text-decoration:none" }, "+ New Project"));
 
     try {
         const projects = await api(`/api/contracts/${contractNumber}/projects`);
@@ -210,8 +198,9 @@ async function renderContractProjects(contractNumber) {
             return;
         }
         for (const p of projects) {
+            const rn = encodeURIComponent(p.resource_name);
             app.appendChild(
-                h("div", { className: "card" },
+                h("a", { href: `#/contracts/${cn}/projects/${rn}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
                     h("div", { className: "card-header" },
                         h("h3", {}, p.name),
                         phaseBadge(p.phase),
@@ -221,16 +210,56 @@ async function renderContractProjects(contractNumber) {
                 )
             );
         }
-    } catch (e) {
-        showAlert(e.message);
-    }
+    } catch (e) { showAlert(e.message); }
 }
 
-// --- Customer views: Create project ---
+async function renderProjectDetail(contractNumber, resourceName) {
+    clear(app);
+    const cn = encodeURIComponent(contractNumber);
+    const rn = encodeURIComponent(resourceName);
+
+    app.appendChild(breadcrumbs(
+        { label: "My Contracts", hash: "contracts" },
+        { label: contractNumber, hash: `contracts/${cn}/projects` },
+        { label: resourceName },
+    ));
+
+    try {
+        const p = await api(`/api/contracts/${contractNumber}/projects/${resourceName}`);
+        app.appendChild(h("h2", {}, p.name));
+        app.appendChild(h("div", { className: "card", style: "margin-bottom:16px" },
+            h("div", { className: "card-header" },
+                h("div", { className: "section-label", style: "margin:0" }, "Status"),
+                phaseBadge(p.phase),
+            ),
+        ));
+
+        app.appendChild(h("div", { className: "card" },
+            h("div", { className: "section-label", style: "margin-top:0" }, "Description"),
+            h("p", {}, p.description || "(none)"),
+            h("div", { className: "section-label" }, "Users"),
+            ...p.users.map(u => h("p", {}, u)),
+            p.users.length === 0 ? h("p", { className: "meta" }, "(none)") : null,
+            h("div", { className: "section-label" }, "Contract"),
+            h("p", {}, p.contract_number),
+        ));
+
+        app.appendChild(h("div", { className: "btn-row", style: "margin-top:16px" },
+            h("a", { href: `#/contracts/${cn}/projects/edit/${rn}`, className: "btn btn-primary btn-small", style: "text-decoration:none" }, "Edit Project"),
+            h("button", { className: "btn btn-danger", onclick: async () => {
+                if (confirm(`Delete project ${p.name}? This will remove the OpenStack project and all its resources. This cannot be undone.`)) {
+                    try {
+                        await api(`/api/contracts/${contractNumber}/projects/${resourceName}`, { method: "DELETE" });
+                        navigate(`/contracts/${cn}/projects`);
+                    } catch (err) { showAlert(err.message); }
+                }
+            }}, "Delete Project"),
+        ));
+    } catch (e) { showAlert(e.message); }
+}
 
 function renderCreateProject(contractNumber) {
     clear(app);
-
     const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
     const customerDomain = contractInfo ? contractInfo.customer.domain : "";
     const cn = encodeURIComponent(contractNumber);
@@ -241,7 +270,6 @@ function renderCreateProject(contractNumber) {
         { label: "New Project" },
     ));
     app.appendChild(h("h2", {}, "New Project"));
-    app.appendChild(h("p", { className: "page-desc" }, "Create a new project under contract " + contractNumber + "."));
 
     const form = h("form", { className: "form-card", onsubmit: async (e) => {
         e.preventDefault();
@@ -249,26 +277,22 @@ function renderCreateProject(contractNumber) {
         const description = form.querySelector('[name="description"]').value.trim();
         const usersRaw = form.querySelector('[name="users"]').value.trim();
         const users = usersRaw ? usersRaw.split("\n").map(u => u.trim()).filter(Boolean) : [];
-
         try {
             await api(`/api/contracts/${contractNumber}/projects`, {
-                method: "POST",
-                body: JSON.stringify({ name, description, users }),
+                method: "POST", body: JSON.stringify({ name, description, users }),
             });
             navigate(`/contracts/${cn}/projects`);
-        } catch (err) {
-            showAlert(err.message);
-        }
+        } catch (err) { showAlert(err.message); }
     }},
-        h("label", { htmlFor: "name" }, "Project name"),
+        h("label", {}, "Project name"),
         h("div", { className: "input-with-suffix" },
-            h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project" }),
+            h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project", pattern: "[a-z0-9]([a-z0-9-]*[a-z0-9])?" }),
             customerDomain ? h("span", { className: "input-suffix" }, "." + customerDomain) : null,
         ),
-        h("label", { htmlFor: "description" }, "Description"),
+        h("label", {}, "Description"),
         h("input", { name: "description", placeholder: "Optional description" }),
-        h("label", { htmlFor: "users" }, "Users (one email per line)"),
-        h("textarea", { name: "users", placeholder: "user1@example.se\nuser2@example.se" }),
+        h("label", {}, "Users (one identifier per line)"),
+        h("textarea", { name: "users", placeholder: "user1@idp\nuser2@idp" }),
         h("div", { className: "btn-row" },
             h("a", { href: `#/contracts/${cn}/projects`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
             h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Create Project"),
@@ -277,14 +301,53 @@ function renderCreateProject(contractNumber) {
     app.appendChild(form);
 }
 
-// --- Admin views: Customers ---
+async function renderEditProject(contractNumber, resourceName) {
+    clear(app);
+    const cn = encodeURIComponent(contractNumber);
+    const rn = encodeURIComponent(resourceName);
+
+    app.appendChild(breadcrumbs(
+        { label: "My Contracts", hash: "contracts" },
+        { label: contractNumber, hash: `contracts/${cn}/projects` },
+        { label: resourceName, hash: `contracts/${cn}/projects/${rn}` },
+        { label: "Edit" },
+    ));
+    app.appendChild(h("h2", {}, "Edit Project"));
+
+    try {
+        const p = await api(`/api/contracts/${contractNumber}/projects/${resourceName}`);
+        const form = h("form", { className: "form-card", onsubmit: async (e) => {
+            e.preventDefault();
+            const description = form.querySelector('[name="description"]').value.trim();
+            const usersRaw = form.querySelector('[name="users"]').value.trim();
+            const users = usersRaw ? usersRaw.split("\n").map(u => u.trim()).filter(Boolean) : [];
+            try {
+                await api(`/api/contracts/${contractNumber}/projects/${resourceName}`, {
+                    method: "PATCH", body: JSON.stringify({ description, users }),
+                });
+                navigate(`/contracts/${cn}/projects/${rn}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("label", {}, "Project name"),
+            h("input", { value: p.name, disabled: "true" }),
+            h("label", {}, "Description"),
+            h("input", { name: "description", value: p.description, placeholder: "Optional description" }),
+            h("label", {}, "Users (one identifier per line)"),
+            h("textarea", { name: "users" }, p.users.join("\n")),
+            h("div", { className: "btn-row" },
+                h("a", { href: `#/contracts/${cn}/projects/${rn}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
+                h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Save Changes"),
+            ),
+        );
+        app.appendChild(form);
+    } catch (e) { showAlert(e.message); }
+}
+
+// ========== ADMIN VIEWS ==========
 
 async function renderAdminCustomers() {
     clear(app);
-    app.appendChild(breadcrumbs(
-        { label: "Admin" },
-        { label: "Customers" },
-    ));
+    app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Customers" }));
     app.appendChild(h("h2", {}, "Customers"));
     app.appendChild(h("p", { className: "page-desc" }, "Manage customer organisations and their contracts."));
 
@@ -294,24 +357,15 @@ async function renderAdminCustomers() {
         const domain = form.querySelector('[name="domain"]').value.trim();
         const description = form.querySelector('[name="description"]').value.trim();
         try {
-            await api("/api/admin/customers", {
-                method: "POST",
-                body: JSON.stringify({ name, domain, description }),
-            });
+            await api("/api/admin/customers", { method: "POST", body: JSON.stringify({ name, domain, description }) });
             navigate("/admin");
         } catch (err) { showAlert(err.message); }
     }},
         h("div", { className: "form-card" },
             h("h3", {}, "Add Customer"),
             h("div", { className: "form-row" },
-                h("div", {},
-                    h("label", {}, "Name"),
-                    h("input", { name: "name", required: "true", placeholder: "Organisation name" }),
-                ),
-                h("div", {},
-                    h("label", {}, "Domain"),
-                    h("input", { name: "domain", required: "true", placeholder: "example.se", pattern: "[a-z0-9.-]+" }),
-                ),
+                h("div", {}, h("label", {}, "Name"), h("input", { name: "name", required: "true", placeholder: "Organisation name" })),
+                h("div", {}, h("label", {}, "Domain"), h("input", { name: "domain", required: "true", placeholder: "example.se", pattern: "[a-z0-9.-]+" })),
             ),
             h("label", {}, "Description"),
             h("input", { name: "description", placeholder: "Optional" }),
@@ -319,22 +373,15 @@ async function renderAdminCustomers() {
         ),
     );
     app.appendChild(form);
-
     app.appendChild(h("div", { className: "section-label" }, "Existing Customers"));
 
     try {
         const customers = await api("/api/admin/customers");
-        if (!customers.length) {
-            app.appendChild(h("p", { className: "empty" }, "No customers yet."));
-            return;
-        }
+        if (!customers.length) { app.appendChild(h("p", { className: "empty" }, "No customers yet.")); return; }
         for (const c of customers) {
             app.appendChild(
                 h("a", { href: `#/admin/customers/${c.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
-                    h("div", { className: "card-header" },
-                        h("h3", {}, c.name),
-                        h("span", { className: "badge badge-neutral" }, c.domain),
-                    ),
+                    h("div", { className: "card-header" }, h("h3", {}, c.name), h("span", { className: "badge badge-neutral" }, c.domain)),
                     c.description ? h("p", { className: "meta" }, c.description) : null,
                 )
             );
@@ -342,47 +389,40 @@ async function renderAdminCustomers() {
     } catch (e) { showAlert(e.message); }
 }
 
-// --- Admin views: Customer detail ---
-
 async function renderAdminCustomerDetail(customerId) {
     clear(app);
     try {
         const customer = await api(`/api/admin/customers/${customerId}`);
-
-        app.appendChild(breadcrumbs(
-            { label: "Admin" },
-            { label: "Customers", hash: "admin" },
-            { label: customer.name },
-        ));
+        app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Customers", hash: "admin" }, { label: customer.name }));
         app.appendChild(h("h2", {}, customer.name));
-        app.appendChild(h("p", { className: "page-desc" },
-            customer.domain + (customer.description ? " — " + customer.description : ""),
+        const descParts = [customer.domain];
+        if (customer.description) descParts.push(customer.description);
+        app.appendChild(h("p", { className: "page-desc" }, descParts.join(" — ")));
+
+        app.appendChild(h("div", { className: "btn-row", style: "margin-bottom:20px" },
+            h("a", { href: `#/admin/customers/edit/${customerId}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Edit Customer"),
+            h("button", { className: "btn btn-danger", onclick: async () => {
+                if (confirm(`Delete customer ${customer.name}? All contracts must be deleted first.`)) {
+                    try { await api(`/api/admin/customers/${customerId}`, { method: "DELETE" }); navigate("/admin"); }
+                    catch (err) { showAlert(err.message); }
+                }
+            }}, "Delete Customer"),
         ));
 
         app.appendChild(h("div", { className: "section-label" }, "Add Contract"));
-
         const form = h("form", { onsubmit: async (e) => {
             e.preventDefault();
             const cn = form.querySelector('[name="contract_number"]').value.trim();
             const desc = form.querySelector('[name="description"]').value.trim();
             try {
-                await api("/api/admin/contracts", {
-                    method: "POST",
-                    body: JSON.stringify({ customer_id: customerId, contract_number: cn, description: desc }),
-                });
+                await api("/api/admin/contracts", { method: "POST", body: JSON.stringify({ customer_id: customerId, contract_number: cn, description: desc }) });
                 navigate(`/admin/customers/${customerId}`);
             } catch (err) { showAlert(err.message); }
         }},
             h("div", { className: "form-card" },
                 h("div", { className: "form-row" },
-                    h("div", {},
-                        h("label", {}, "Contract Number"),
-                        h("input", { name: "contract_number", required: "true", placeholder: "SD-123-a", pattern: "[A-Za-z0-9-]+" }),
-                    ),
-                    h("div", {},
-                        h("label", {}, "Description"),
-                        h("input", { name: "description", placeholder: "Optional" }),
-                    ),
+                    h("div", {}, h("label", {}, "Contract Number"), h("input", { name: "contract_number", required: "true", placeholder: "SD-123-a", pattern: "[A-Za-z0-9-]+" })),
+                    h("div", {}, h("label", {}, "Description"), h("input", { name: "description", placeholder: "Optional" })),
                 ),
                 h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Contract"),
             ),
@@ -390,16 +430,11 @@ async function renderAdminCustomerDetail(customerId) {
         app.appendChild(form);
 
         app.appendChild(h("div", { className: "section-label" }, "Contracts"));
-
-        if (!customer.contracts.length) {
-            app.appendChild(h("p", { className: "empty" }, "No contracts yet."));
-        }
+        if (!customer.contracts.length) app.appendChild(h("p", { className: "empty" }, "No contracts yet."));
         for (const c of customer.contracts) {
             app.appendChild(
                 h("a", { href: `#/admin/contracts/${c.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
-                    h("div", { className: "card-header" },
-                        h("h3", {}, c.contract_number),
-                    ),
+                    h("div", { className: "card-header" }, h("h3", {}, c.contract_number)),
                     c.description ? h("p", { className: "meta" }, c.description) : null,
                 )
             );
@@ -407,76 +442,245 @@ async function renderAdminCustomerDetail(customerId) {
     } catch (e) { showAlert(e.message); }
 }
 
-// --- Admin views: Contract detail (manage users) ---
+async function renderAdminEditCustomer(customerId) {
+    clear(app);
+    try {
+        const customer = await api(`/api/admin/customers/${customerId}`);
+        app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Customers", hash: "admin" }, { label: customer.name, hash: `admin/customers/${customerId}` }, { label: "Edit" }));
+        app.appendChild(h("h2", {}, "Edit Customer"));
+
+        const form = h("form", { className: "form-card", onsubmit: async (e) => {
+            e.preventDefault();
+            const name = form.querySelector('[name="name"]').value.trim();
+            const domain = form.querySelector('[name="domain"]').value.trim();
+            const description = form.querySelector('[name="description"]').value.trim();
+            try {
+                await api(`/api/admin/customers/${customerId}`, { method: "PATCH", body: JSON.stringify({ name, domain, description }) });
+                navigate(`/admin/customers/${customerId}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("label", {}, "Name"),
+            h("input", { name: "name", required: "true", value: customer.name }),
+            h("label", {}, "Domain"),
+            h("input", { name: "domain", required: "true", value: customer.domain, pattern: "[a-z0-9.-]+" }),
+            h("label", {}, "Description"),
+            h("input", { name: "description", value: customer.description }),
+            h("div", { className: "btn-row" },
+                h("a", { href: `#/admin/customers/${customerId}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
+                h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Save Changes"),
+            ),
+        );
+        app.appendChild(form);
+    } catch (e) { showAlert(e.message); }
+}
 
 async function renderAdminContractDetail(contractId) {
     clear(app);
     try {
         const contract = await api(`/api/admin/contracts/${contractId}`);
-
-        app.appendChild(breadcrumbs(
-            { label: "Admin" },
-            { label: "Customers", hash: "admin" },
-            { label: contract.customer.name, hash: `admin/customers/${contract.customer.id}` },
-            { label: contract.contract_number },
-        ));
+        app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Customers", hash: "admin" }, { label: contract.customer.name, hash: `admin/customers/${contract.customer.id}` }, { label: contract.contract_number }));
         app.appendChild(h("h2", {}, contract.contract_number));
-        app.appendChild(h("p", { className: "page-desc" },
-            contract.customer.name + " (" + contract.customer.domain + ")" +
-            (contract.description ? " — " + contract.description : ""),
+        const descParts = [contract.customer.name, contract.customer.domain];
+        if (contract.description) descParts.push(contract.description);
+        app.appendChild(h("p", { className: "page-desc" }, descParts.join(" — ")));
+
+        app.appendChild(h("div", { className: "btn-row", style: "margin-bottom:20px" },
+            h("a", { href: `#/admin/contracts/edit/${contractId}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Edit Contract"),
+            h("button", { className: "btn btn-danger", onclick: async () => {
+                if (confirm(`Delete contract ${contract.contract_number}? All projects must be deleted first.`)) {
+                    try { await api(`/api/admin/contracts/${contractId}`, { method: "DELETE" }); navigate(`/admin/customers/${contract.customer.id}`); }
+                    catch (err) { showAlert(err.message); }
+                }
+            }}, "Delete Contract"),
         ));
 
-        app.appendChild(h("div", { className: "section-label" }, "Grant Access"));
-
-        const form = h("form", { onsubmit: async (e) => {
+        // Rebate
+        app.appendChild(h("div", { className: "section-label" }, "Rebate"));
+        const rebateForm = h("form", { className: "form-card", onsubmit: async (e) => {
             e.preventDefault();
-            const sub = form.querySelector('[name="user_sub"]').value.trim();
+            const pct = rebateForm.querySelector('[name="rebate"]').value.trim();
             try {
-                await api(`/api/admin/contracts/${contractId}/users`, {
-                    method: "POST",
-                    body: JSON.stringify({ user_sub: sub }),
+                await api(`/api/admin/contracts/${contractId}/rebate`, { method: "PUT", body: JSON.stringify({ rebate_percent: parseFloat(pct) }) });
+                navigate(`/admin/contracts/${contractId}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("div", { className: "form-row" },
+                h("div", {},
+                    h("label", {}, "Rebate (%)"),
+                    h("input", { name: "rebate", type: "number", min: "0", max: "100", step: "0.01", value: contract.rebate_percent != null ? contract.rebate_percent : "" }),
+                ),
+                h("div", { style: "display:flex;align-items:flex-end;gap:8px;padding-bottom:12px" },
+                    h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Rebate"),
+                    contract.rebate_percent != null ? h("button", { type: "button", className: "btn btn-danger", onclick: async () => {
+                        try { await api(`/api/admin/contracts/${contractId}/rebate`, { method: "DELETE" }); navigate(`/admin/contracts/${contractId}`); }
+                        catch (err) { showAlert(err.message); }
+                    }}, "Remove") : null,
+                ),
+            ),
+        );
+        app.appendChild(rebateForm);
+
+        // Price overrides
+        app.appendChild(h("div", { className: "section-label" }, "Price Overrides"));
+        try {
+            const overrides = await api(`/api/admin/contracts/${contractId}/pricing`);
+            if (overrides.length) {
+                const ul = h("ul", { className: "user-list" });
+                for (const o of overrides) {
+                    ul.appendChild(h("li", {},
+                        h("span", { className: "user-sub" }, `${o.resource_type}: ${o.unit_price} SEK`),
+                        h("button", { className: "btn btn-danger", onclick: async () => {
+                            await api(`/api/admin/contracts/${contractId}/pricing/${encodeURIComponent(o.resource_type)}`, { method: "DELETE" });
+                            navigate(`/admin/contracts/${contractId}`);
+                        }}, "Remove"),
+                    ));
+                }
+                app.appendChild(ul);
+            } else {
+                app.appendChild(h("p", { className: "meta", style: "margin-bottom:8px" }, "Using global default prices."));
+            }
+        } catch (e) { /* ignore */ }
+
+        const priceForm = h("form", { className: "form-card", onsubmit: async (e) => {
+            e.preventDefault();
+            const rt = priceForm.querySelector('[name="resource_type"]').value.trim();
+            const price = priceForm.querySelector('[name="unit_price"]').value.trim();
+            try {
+                await api(`/api/admin/contracts/${contractId}/pricing/${encodeURIComponent(rt)}`, {
+                    method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price) }),
                 });
+                navigate(`/admin/contracts/${contractId}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("div", { className: "form-row" },
+                h("div", {}, h("label", {}, "Resource type"), h("input", { name: "resource_type", required: "true", placeholder: "Compute" })),
+                h("div", {}, h("label", {}, "Unit price (SEK)"), h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true" })),
+            ),
+            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Override"),
+        );
+        app.appendChild(priceForm);
+
+        // Grant access
+        app.appendChild(h("div", { className: "section-label" }, "Grant Access"));
+        const accessForm = h("form", { onsubmit: async (e) => {
+            e.preventDefault();
+            const sub = accessForm.querySelector('[name="user_sub"]').value.trim();
+            try {
+                await api(`/api/admin/contracts/${contractId}/users`, { method: "POST", body: JSON.stringify({ user_sub: sub }) });
                 navigate(`/admin/contracts/${contractId}`);
             } catch (err) { showAlert(err.message); }
         }},
             h("div", { className: "form-card" },
                 h("div", { className: "form-row" },
-                    h("div", {},
-                        h("label", {}, "User (OIDC sub / email)"),
-                        h("input", { name: "user_sub", required: "true", placeholder: "user@example.se" }),
-                    ),
+                    h("div", {}, h("label", {}, "User identifier"), h("input", { name: "user_sub", required: "true", placeholder: "username@idp" })),
                     h("div", { style: "display:flex;align-items:flex-end;padding-bottom:12px" },
                         h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Grant Access"),
                     ),
                 ),
             ),
         );
-        app.appendChild(form);
+        app.appendChild(accessForm);
 
+        // Authorized users
         app.appendChild(h("div", { className: "section-label" }, "Authorized Users"));
-
         if (!contract.users.length) {
             app.appendChild(h("p", { className: "empty" }, "No users have access yet."));
         } else {
             const ul = h("ul", { className: "user-list" });
             for (const userSub of contract.users) {
                 ul.appendChild(h("li", {},
-                    h("span", { className: "user-email" }, userSub),
-                    h("button", {
-                        className: "btn btn-danger",
-                        onclick: async (e) => {
-                            e.stopPropagation();
-                            if (confirm(`Revoke access for ${userSub}?`)) {
-                                await api(`/api/admin/contracts/${contractId}/users/${encodeURIComponent(userSub)}`, { method: "DELETE" });
-                                navigate(`/admin/contracts/${contractId}`);
-                            }
-                        },
-                    }, "Revoke"),
+                    h("span", { className: "user-sub" }, userSub),
+                    h("button", { className: "btn btn-danger", onclick: async (e) => {
+                        e.stopPropagation();
+                        if (confirm(`Revoke access for ${userSub}?`)) {
+                            await api(`/api/admin/contracts/${contractId}/users/${encodeURIComponent(userSub)}`, { method: "DELETE" });
+                            navigate(`/admin/contracts/${contractId}`);
+                        }
+                    }}, "Revoke"),
                 ));
             }
             app.appendChild(ul);
         }
     } catch (e) { showAlert(e.message); }
+}
+
+async function renderAdminEditContract(contractId) {
+    clear(app);
+    try {
+        const contract = await api(`/api/admin/contracts/${contractId}`);
+        app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Customers", hash: "admin" }, { label: contract.customer.name, hash: `admin/customers/${contract.customer.id}` }, { label: contract.contract_number, hash: `admin/contracts/${contractId}` }, { label: "Edit" }));
+        app.appendChild(h("h2", {}, "Edit Contract"));
+
+        const form = h("form", { className: "form-card", onsubmit: async (e) => {
+            e.preventDefault();
+            const description = form.querySelector('[name="description"]').value.trim();
+            try {
+                await api(`/api/admin/contracts/${contractId}`, { method: "PATCH", body: JSON.stringify({ description }) });
+                navigate(`/admin/contracts/${contractId}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("label", {}, "Contract number"),
+            h("input", { value: contract.contract_number, disabled: "true" }),
+            h("label", {}, "Description"),
+            h("input", { name: "description", value: contract.description }),
+            h("div", { className: "btn-row" },
+                h("a", { href: `#/admin/contracts/${contractId}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
+                h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Save Changes"),
+            ),
+        );
+        app.appendChild(form);
+    } catch (e) { showAlert(e.message); }
+}
+
+// --- Admin: Global Pricing ---
+
+async function renderAdminPricing() {
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Pricing" }));
+    app.appendChild(h("h2", {}, "Global Pricing"));
+    app.appendChild(h("p", { className: "page-desc" }, "Set default prices per resource type. Contracts can override these individually."));
+
+    try {
+        const prices = await api("/api/admin/pricing");
+        if (prices.length) {
+            const ul = h("ul", { className: "user-list" });
+            for (const p of prices) {
+                ul.appendChild(h("li", {},
+                    h("span", { className: "user-sub" }, `${p.resource_type}: ${p.unit_price} SEK / ${p.unit}`),
+                    h("button", { className: "btn btn-danger", onclick: async () => {
+                        await api(`/api/admin/pricing/${encodeURIComponent(p.resource_type)}`, { method: "DELETE" });
+                        navigate("/admin/pricing");
+                    }}, "Remove"),
+                ));
+            }
+            app.appendChild(ul);
+        } else {
+            app.appendChild(h("p", { className: "empty" }, "No prices configured yet."));
+        }
+    } catch (e) { showAlert(e.message); }
+
+    app.appendChild(h("div", { className: "section-label" }, "Add Price"));
+    const form = h("form", { className: "form-card", onsubmit: async (e) => {
+        e.preventDefault();
+        const rt = form.querySelector('[name="resource_type"]').value.trim();
+        const price = form.querySelector('[name="unit_price"]').value.trim();
+        const unit = form.querySelector('[name="unit"]').value.trim();
+        try {
+            await api(`/api/admin/pricing/${encodeURIComponent(rt)}`, {
+                method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit }),
+            });
+            navigate("/admin/pricing");
+        } catch (err) { showAlert(err.message); }
+    }},
+        h("div", { className: "form-row" },
+            h("div", {}, h("label", {}, "Resource type"), h("input", { name: "resource_type", required: "true", placeholder: "Compute" })),
+            h("div", {}, h("label", {}, "Unit"), h("input", { name: "unit", required: "true", placeholder: "timmar" })),
+        ),
+        h("label", {}, "Unit price (SEK)"),
+        h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true", placeholder: "0.00" }),
+        h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Price"),
+    );
+    app.appendChild(form);
 }
 
 // --- Init ---
