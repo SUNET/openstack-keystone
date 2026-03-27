@@ -58,6 +58,23 @@ class Settings:
         )
     )
 
+    # SMTP (for billing email delivery)
+    smtp_host: str = field(default_factory=lambda: os.environ.get("SMTP_HOST", ""))
+    smtp_port: int = field(default_factory=lambda: int(os.environ.get("SMTP_PORT", "587")))
+    smtp_username: str = field(default_factory=lambda: os.environ.get("SMTP_USERNAME", ""))
+    smtp_password: str = field(default_factory=lambda: os.environ.get("SMTP_PASSWORD", ""))
+    smtp_from: str = field(
+        default_factory=lambda: os.environ.get("SMTP_FROM", "portal@sunet.se")
+    )
+
+    # Billing
+    billing_trigger_token: str = field(
+        default_factory=lambda: os.environ.get("BILLING_TRIGGER_TOKEN", "")
+    )
+    openstack_cloud: str = field(
+        default_factory=lambda: os.environ.get("OPENSTACK_CLOUD", "openstack")
+    )
+
 
 def get_settings() -> Settings:
     return Settings()

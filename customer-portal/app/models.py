@@ -107,3 +107,71 @@ class ContractRebate(Base):
     rebate_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
 
     contract: Mapped["Contract"] = relationship(back_populates="rebate")
+
+
+class BillingJob(Base):
+    """Configured billing export job."""
+
+    __tablename__ = "billing_job"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_sub: Mapped[str] = mapped_column(String(255), nullable=False)
+    all_contracts: Mapped[bool] = mapped_column(default=False)
+    schedule: Mapped[str] = mapped_column(String(100), nullable=False)
+    delivery_method: Mapped[str] = mapped_column(String(50), nullable=False)
+    delivery_config: Mapped[str] = mapped_column(Text, nullable=False)
+    filename_template: Mapped[str] = mapped_column(
+        String(255), default="billing-{year}-{month}.csv"
+    )
+    per_contract: Mapped[bool] = mapped_column(default=False)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
+
+    selected_contracts: Mapped[list["BillingJobContract"]] = relationship(
+        back_populates="billing_job", cascade="all, delete-orphan"
+    )
+    runs: Mapped[list["BillingJobRun"]] = relationship(
+        back_populates="billing_job", cascade="all, delete-orphan"
+    )
+
+
+class BillingJobContract(Base):
+    """Junction table for billing job contract selection."""
+
+    __tablename__ = "billing_job_contract"
+    __table_args__ = (
+        UniqueConstraint("billing_job_id", "contract_id", name="uq_billing_job_contract"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    billing_job_id: Mapped[int] = mapped_column(
+        ForeignKey("billing_job.id", ondelete="CASCADE"), nullable=False
+    )
+    contract_id: Mapped[int] = mapped_column(
+        ForeignKey("contract.id", ondelete="CASCADE"), nullable=False
+    )
+
+    billing_job: Mapped["BillingJob"] = relationship(back_populates="selected_contracts")
+    contract: Mapped["Contract"] = relationship()
+
+
+class BillingJobRun(Base):
+    """Execution history for billing jobs."""
+
+    __tablename__ = "billing_job_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    billing_job_id: Mapped[int] = mapped_column(
+        ForeignKey("billing_job.id", ondelete="CASCADE"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    billing_period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    billing_period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    files_delivered: Mapped[int] = mapped_column(default=0)
+
+    billing_job: Mapped["BillingJob"] = relationship(back_populates="runs")

@@ -136,6 +136,68 @@ class ProjectResponse(BaseModel):
     phase: str | None = None
 
 
+# --- Billing Jobs ---
+
+
+class CreateBillingJobRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    all_contracts: bool = False
+    contract_ids: list[int] = Field(default_factory=list)
+    schedule: str = Field(min_length=1, max_length=100)
+    delivery_method: str = Field(pattern=r"^(webdav|email)$")
+    delivery_config: dict
+    filename_template: str = Field(default="billing-{year}-{month}.csv", max_length=255)
+    per_contract: bool = False
+    enabled: bool = True
+
+
+class UpdateBillingJobRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    all_contracts: bool | None = None
+    contract_ids: list[int] | None = None
+    schedule: str | None = Field(default=None, min_length=1, max_length=100)
+    delivery_method: str | None = Field(default=None, pattern=r"^(webdav|email)$")
+    delivery_config: dict | None = None
+    filename_template: str | None = Field(default=None, max_length=255)
+    per_contract: bool | None = None
+    enabled: bool | None = None
+
+
+class ManualRunRequest(BaseModel):
+    year: int | None = None
+    month: int | None = None
+
+
+class BillingJobResponse(BaseModel):
+    id: int
+    name: str
+    owner_sub: str
+    all_contracts: bool
+    contract_ids: list[int] = []
+    schedule: str
+    delivery_method: str
+    delivery_config: dict
+    filename_template: str
+    per_contract: bool
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class BillingJobRunResponse(BaseModel):
+    id: int
+    billing_job_id: int
+    started_at: datetime
+    completed_at: datetime | None = None
+    billing_period_start: datetime
+    billing_period_end: datetime
+    status: str
+    error_message: str | None = None
+    files_delivered: int
+
+    model_config = {"from_attributes": True}
+
+
 # --- Auth ---
 
 

@@ -18,7 +18,8 @@ from app.config import Settings, get_settings
 from app.db import close_db, get_session, init_db, run_migrations
 from app.git_backend import GitBackend
 from app.k8s import init_k8s
-from app.routers import admin, projects
+from app.crypto import init_crypto
+from app.routers import admin, billing, projects
 from app.schemas import ContractWithCustomerResponse, UserInfo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,6 +48,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Kubernetes client not available (running outside cluster?)")
 
+    # Initialize crypto for credential encryption
+    init_crypto(settings.secret_key)
+
     # Initialize OIDC
     init_oauth(settings)
     logger.info("OIDC provider configured")
@@ -72,6 +76,7 @@ app.add_middleware(
 # Include routers
 app.include_router(admin.router)
 app.include_router(projects.router)
+app.include_router(billing.router)
 
 
 @app.exception_handler(ValueError)

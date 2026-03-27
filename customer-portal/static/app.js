@@ -8,7 +8,10 @@ let currentUser = null;
 
 // --- Router ---
 
-function navigate(hash) { location.hash = hash; }
+function navigate(hash) {
+    if (location.hash === "#" + hash) route();
+    else location.hash = hash;
+}
 
 function currentRoute() { return location.hash.replace(/^#\/?/, ""); }
 
@@ -39,7 +42,19 @@ async function route() {
     if (parts[0] === "contracts" || !path)
         return renderContracts();
 
+    // Billing routes
+    if (parts[0] === "billing" && parts[1] === "new")
+        return renderCreateBillingJob();
+    if (parts[0] === "billing" && parts[1] && parts[2] === "edit")
+        return renderEditBillingJob(parts[1]);
+    if (parts[0] === "billing" && parts[1])
+        return renderBillingJobDetail(parts[1]);
+    if (parts[0] === "billing")
+        return renderBillingJobs();
+
     // Admin routes
+    if (parts[0] === "admin" && parts[1] === "billing")
+        return renderAdminBillingJobs();
     if (parts[0] === "admin" && parts[1] === "pricing")
         return renderAdminPricing();
     if (parts[0] === "admin" && parts[1] === "contracts" && parts[2] === "edit" && parts[3])
@@ -125,6 +140,7 @@ function renderNav() {
     clear(nav);
     if (!currentUser) return;
     nav.appendChild(h("a", { href: "#/contracts" }, "My Contracts"));
+    nav.appendChild(h("a", { href: "#/billing" }, "Billing"));
     if (currentUser.is_admin) {
         nav.appendChild(h("a", { href: "#/admin" }, "Admin"));
         nav.appendChild(h("a", { href: "#/admin/pricing" }, "Pricing"));
@@ -541,24 +557,37 @@ async function renderAdminContractDetail(contractId) {
             }
         } catch (e) { /* ignore */ }
 
-        const priceForm = h("form", { className: "form-card", onsubmit: async (e) => {
-            e.preventDefault();
-            const rt = priceForm.querySelector('[name="resource_type"]').value.trim();
-            const price = priceForm.querySelector('[name="unit_price"]').value.trim();
-            try {
-                await api(`/api/admin/contracts/${contractId}/pricing/${encodeURIComponent(rt)}`, {
-                    method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price) }),
-                });
-                navigate(`/admin/contracts/${contractId}`);
-            } catch (err) { showAlert(err.message); }
-        }},
-            h("div", { className: "form-row" },
-                h("div", {}, h("label", {}, "Resource type"), h("input", { name: "resource_type", required: "true", placeholder: "Compute" })),
-                h("div", {}, h("label", {}, "Unit price (SEK)"), h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true" })),
-            ),
-            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Override"),
-        );
-        app.appendChild(priceForm);
+        // Fetch global prices for the dropdown
+        let globalPrices = [];
+        try { globalPrices = await api("/api/admin/pricing"); } catch (e) { /* ignore */ }
+
+        if (globalPrices.length) {
+            const select = h("select", { name: "resource_type", required: "true" },
+                h("option", { value: "" }, "-- Select resource type --"),
+                ...globalPrices.map(p => h("option", { value: p.resource_type }, `${p.resource_type} (${p.unit_price} SEK / ${p.unit})`)),
+            );
+            const priceForm = h("form", { className: "form-card", onsubmit: async (e) => {
+                e.preventDefault();
+                const rt = priceForm.querySelector('[name="resource_type"]').value;
+                const price = priceForm.querySelector('[name="unit_price"]').value.trim();
+                if (!rt) return;
+                try {
+                    await api(`/api/admin/contracts/${contractId}/pricing/${encodeURIComponent(rt)}`, {
+                        method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price) }),
+                    });
+                    navigate(`/admin/contracts/${contractId}`);
+                } catch (err) { showAlert(err.message); }
+            }},
+                h("div", { className: "form-row" },
+                    h("div", {}, h("label", {}, "Resource type"), select),
+                    h("div", {}, h("label", {}, "Override price (SEK)"), h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true" })),
+                ),
+                h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Override"),
+            );
+            app.appendChild(priceForm);
+        } else {
+            app.appendChild(h("p", { className: "meta" }, "Configure global prices first (Admin > Pricing) before adding overrides."));
+        }
 
         // Grant access
         app.appendChild(h("div", { className: "section-label" }, "Grant Access"));
@@ -681,6 +710,341 @@ async function renderAdminPricing() {
         h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Price"),
     );
     app.appendChild(form);
+}
+
+// ========== BILLING VIEWS ==========
+
+async function renderBillingJobs() {
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "Billing" }));
+    app.appendChild(h("h2", {}, "Billing Jobs"));
+    app.appendChild(h("p", { className: "page-desc" }, "Automated billing exports delivered to WebDAV or email on a schedule."));
+    app.appendChild(h("a", { href: "#/billing/new", className: "btn btn-primary btn-small", style: "display:inline-block;margin-bottom:16px;text-decoration:none" }, "+ New Billing Job"));
+
+    try {
+        const jobs = await api("/api/billing/jobs");
+        if (!jobs.length) {
+            app.appendChild(h("p", { className: "empty" }, "No billing jobs configured yet."));
+            return;
+        }
+        for (const j of jobs) {
+            app.appendChild(
+                h("a", { href: `#/billing/${j.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
+                    h("div", { className: "card-header" },
+                        h("h3", {}, j.name),
+                        h("span", { className: j.enabled ? "badge badge-ready" : "badge badge-neutral" }, j.enabled ? "Enabled" : "Disabled"),
+                    ),
+                    h("p", { className: "meta" }, `${j.delivery_method} — ${j.schedule} — ${j.all_contracts ? "all contracts" : j.contract_ids.length + " contracts"}`),
+                )
+            );
+        }
+    } catch (e) { showAlert(e.message); }
+}
+
+async function renderBillingJobDetail(jobId) {
+    clear(app);
+    try {
+        const job = await api(`/api/billing/jobs/${jobId}`);
+        app.appendChild(breadcrumbs({ label: "Billing", hash: "billing" }, { label: job.name }));
+        app.appendChild(h("h2", {}, job.name));
+
+        app.appendChild(h("div", { className: "card" },
+            h("div", { className: "card-header" },
+                h("div", { className: "section-label", style: "margin:0" }, "Status"),
+                h("span", { className: job.enabled ? "badge badge-ready" : "badge badge-neutral" }, job.enabled ? "Enabled" : "Disabled"),
+            ),
+            h("div", { className: "section-label" }, "Schedule"),
+            h("p", {}, job.schedule),
+            h("div", { className: "section-label" }, "Delivery"),
+            h("p", {}, job.delivery_method === "webdav" ? `WebDAV: ${job.delivery_config.url || ""}` : `Email: ${job.delivery_config.recipient || ""}`),
+            h("div", { className: "section-label" }, "Filename Template"),
+            h("p", {}, job.filename_template),
+            h("div", { className: "section-label" }, "Output Mode"),
+            h("p", {}, job.per_contract ? "One file per contract" : "Single file"),
+            h("div", { className: "section-label" }, "Contracts"),
+            h("p", {}, job.all_contracts ? "All accessible contracts" : `${job.contract_ids.length} selected`),
+        ));
+
+        app.appendChild(h("div", { className: "btn-row", style: "margin-top:16px;margin-bottom:20px" },
+            h("a", { href: `#/billing/${jobId}/edit`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Edit"),
+            h("button", { className: "btn btn-primary btn-small", onclick: async () => {
+                try {
+                    const run = await api(`/api/billing/jobs/${jobId}/run`, { method: "POST", body: JSON.stringify({}) });
+                    showAlert(`Run completed: ${run.status}${run.files_delivered ? ", " + run.files_delivered + " files delivered" : ""}`, run.status === "success" ? "success" : "error");
+                    navigate(`/billing/${jobId}`);
+                } catch (err) { showAlert(err.message); }
+            }}, "Run Now"),
+            h("button", { className: "btn btn-danger", onclick: async () => {
+                if (confirm(`Delete billing job "${job.name}"?`)) {
+                    await api(`/api/billing/jobs/${jobId}`, { method: "DELETE" });
+                    navigate("/billing");
+                }
+            }}, "Delete"),
+        ));
+
+        // Execution history
+        app.appendChild(h("div", { className: "section-label" }, "Execution History"));
+        const runs = await api(`/api/billing/jobs/${jobId}/runs`);
+        if (!runs.length) {
+            app.appendChild(h("p", { className: "empty" }, "No executions yet."));
+        } else {
+            for (const r of runs) {
+                const statusClass = r.status === "success" ? "badge-ready" : r.status === "error" ? "badge-error" : "badge-pending";
+                app.appendChild(h("div", { className: "card" },
+                    h("div", { className: "card-header" },
+                        h("span", {}, new Date(r.started_at).toLocaleString()),
+                        h("span", { className: `badge ${statusClass}` }, r.status),
+                    ),
+                    h("p", { className: "meta" },
+                        `Period: ${r.billing_period_start.substring(0, 10)} to ${r.billing_period_end.substring(0, 10)}` +
+                        (r.files_delivered ? ` — ${r.files_delivered} files delivered` : ""),
+                    ),
+                    r.error_message ? h("p", { className: "meta", style: "color:var(--error)" }, r.error_message) : null,
+                ));
+            }
+        }
+    } catch (e) { showAlert(e.message); }
+}
+
+async function renderCreateBillingJob() {
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "Billing", hash: "billing" }, { label: "New Job" }));
+    app.appendChild(h("h2", {}, "New Billing Job"));
+
+    // Fetch user's contracts for selection
+    const user = currentUser;
+    const contracts = user.contracts || [];
+
+    const form = h("form", { className: "form-card", onsubmit: async (e) => {
+        e.preventDefault();
+        const name = form.querySelector('[name="name"]').value.trim();
+        const schedule = form.querySelector('[name="schedule"]').value.trim();
+        const allContracts = form.querySelector('[name="all_contracts"]').checked;
+        const deliveryMethod = form.querySelector('[name="delivery_method"]').value;
+        const filenameTemplate = form.querySelector('[name="filename_template"]').value.trim();
+        const perContract = form.querySelector('[name="per_contract"]').checked;
+
+        const deliveryConfig = {};
+        if (deliveryMethod === "webdav") {
+            deliveryConfig.url = form.querySelector('[name="webdav_url"]').value.trim();
+            deliveryConfig.username = form.querySelector('[name="webdav_username"]').value.trim();
+            deliveryConfig.password = form.querySelector('[name="webdav_password"]').value;
+        } else {
+            deliveryConfig.recipient = form.querySelector('[name="email_recipient"]').value.trim();
+        }
+
+        const contractIds = [];
+        if (!allContracts) {
+            form.querySelectorAll('[name="contract_id"]:checked').forEach(cb => contractIds.push(parseInt(cb.value)));
+        }
+
+        try {
+            await api("/api/billing/jobs", {
+                method: "POST",
+                body: JSON.stringify({ name, schedule, all_contracts: allContracts, contract_ids: contractIds, delivery_method: deliveryMethod, delivery_config: deliveryConfig, filename_template: filenameTemplate, per_contract: perContract }),
+            });
+            navigate("/billing");
+        } catch (err) { showAlert(err.message); }
+    }},
+        h("label", {}, "Job name"),
+        h("input", { name: "name", required: "true", placeholder: "Monthly billing export" }),
+
+        h("label", {}, "Schedule (cron expression)"),
+        h("input", { name: "schedule", required: "true", placeholder: "0 6 1 * *", value: "0 6 1 * *" }),
+        h("p", { className: "meta", style: "margin-top:-8px;margin-bottom:12px" }, "e.g. 0 6 1 * * = 1st of each month at 06:00 UTC"),
+
+        h("label", {}, "Contracts"),
+        h("div", { style: "margin-bottom:12px" },
+            h("label", { style: "display:inline;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text)" },
+                h("input", { type: "checkbox", name: "all_contracts", checked: "true", style: "width:auto;margin-right:6px" }),
+                "All my contracts",
+            ),
+        ),
+        h("div", { id: "contract-checkboxes", style: "margin-bottom:12px" },
+            ...contracts.map(c =>
+                h("label", { style: "display:block;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text);padding:4px 0" },
+                    h("input", { type: "checkbox", name: "contract_id", value: String(c.id), style: "width:auto;margin-right:6px" }),
+                    c.contract_number + " (" + c.customer.name + ")",
+                )
+            ),
+        ),
+
+        h("label", {}, "Delivery method"),
+        h("select", { name: "delivery_method", onchange: (e) => {
+            const webdav = form.querySelector("#webdav-config");
+            const email = form.querySelector("#email-config");
+            webdav.style.display = e.target.value === "webdav" ? "block" : "none";
+            email.style.display = e.target.value === "email" ? "block" : "none";
+        }},
+            h("option", { value: "webdav" }, "WebDAV"),
+            h("option", { value: "email" }, "Email"),
+        ),
+
+        h("div", { id: "webdav-config" },
+            h("label", {}, "WebDAV URL"),
+            h("input", { name: "webdav_url", placeholder: "https://webdav.example.se/billing/" }),
+            h("div", { className: "form-row" },
+                h("div", {}, h("label", {}, "Username"), h("input", { name: "webdav_username" })),
+                h("div", {}, h("label", {}, "Password"), h("input", { name: "webdav_password", type: "password" })),
+            ),
+        ),
+        h("div", { id: "email-config", style: "display:none" },
+            h("label", {}, "Recipient"),
+            h("input", { name: "email_recipient", placeholder: "billing@example.se" }),
+        ),
+
+        h("label", {}, "Filename template"),
+        h("input", { name: "filename_template", value: "billing-{year}-{month}.csv" }),
+        h("p", { className: "meta", style: "margin-top:-8px;margin-bottom:12px" }, "Variables: {year}, {month}, {day}, {date}, {contract}"),
+
+        h("div", { style: "margin-bottom:16px" },
+            h("label", { style: "display:inline;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text)" },
+                h("input", { type: "checkbox", name: "per_contract", style: "width:auto;margin-right:6px" }),
+                "Generate one file per contract",
+            ),
+        ),
+
+        h("div", { className: "btn-row" },
+            h("a", { href: "#/billing", className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
+            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Create Job"),
+        ),
+    );
+    app.appendChild(form);
+}
+
+async function renderEditBillingJob(jobId) {
+    clear(app);
+    try {
+        const job = await api(`/api/billing/jobs/${jobId}`);
+        app.appendChild(breadcrumbs({ label: "Billing", hash: "billing" }, { label: job.name, hash: `billing/${jobId}` }, { label: "Edit" }));
+        app.appendChild(h("h2", {}, "Edit Billing Job"));
+
+        const contracts = currentUser.contracts || [];
+
+        const form = h("form", { className: "form-card", onsubmit: async (e) => {
+            e.preventDefault();
+            const name = form.querySelector('[name="name"]').value.trim();
+            const schedule = form.querySelector('[name="schedule"]').value.trim();
+            const allContracts = form.querySelector('[name="all_contracts"]').checked;
+            const deliveryMethod = form.querySelector('[name="delivery_method"]').value;
+            const filenameTemplate = form.querySelector('[name="filename_template"]').value.trim();
+            const perContract = form.querySelector('[name="per_contract"]').checked;
+            const enabled = form.querySelector('[name="enabled"]').checked;
+
+            const deliveryConfig = {};
+            if (deliveryMethod === "webdav") {
+                deliveryConfig.url = form.querySelector('[name="webdav_url"]').value.trim();
+                deliveryConfig.username = form.querySelector('[name="webdav_username"]').value.trim();
+                deliveryConfig.password = form.querySelector('[name="webdav_password"]').value || "********";
+            } else {
+                deliveryConfig.recipient = form.querySelector('[name="email_recipient"]').value.trim();
+            }
+
+            const contractIds = [];
+            if (!allContracts) {
+                form.querySelectorAll('[name="contract_id"]:checked').forEach(cb => contractIds.push(parseInt(cb.value)));
+            }
+
+            try {
+                await api(`/api/billing/jobs/${jobId}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ name, schedule, all_contracts: allContracts, contract_ids: contractIds, delivery_method: deliveryMethod, delivery_config: deliveryConfig, filename_template: filenameTemplate, per_contract: perContract, enabled }),
+                });
+                navigate(`/billing/${jobId}`);
+            } catch (err) { showAlert(err.message); }
+        }},
+            h("label", {}, "Job name"),
+            h("input", { name: "name", required: "true", value: job.name }),
+
+            h("label", {}, "Schedule (cron expression)"),
+            h("input", { name: "schedule", required: "true", value: job.schedule }),
+
+            h("div", { style: "margin-bottom:12px" },
+                h("label", { style: "display:inline;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text)" },
+                    h("input", { type: "checkbox", name: "all_contracts", style: "width:auto;margin-right:6px", ...(job.all_contracts ? { checked: "true" } : {}) }),
+                    "All my contracts",
+                ),
+            ),
+            h("div", { style: "margin-bottom:12px" },
+                ...contracts.map(c =>
+                    h("label", { style: "display:block;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text);padding:4px 0" },
+                        h("input", { type: "checkbox", name: "contract_id", value: String(c.id), style: "width:auto;margin-right:6px", ...(job.contract_ids.includes(c.id) ? { checked: "true" } : {}) }),
+                        c.contract_number + " (" + c.customer.name + ")",
+                    )
+                ),
+            ),
+
+            h("label", {}, "Delivery method"),
+            h("select", { name: "delivery_method", onchange: (e) => {
+                form.querySelector("#webdav-config").style.display = e.target.value === "webdav" ? "block" : "none";
+                form.querySelector("#email-config").style.display = e.target.value === "email" ? "block" : "none";
+            }},
+                h("option", { value: "webdav", ...(job.delivery_method === "webdav" ? { selected: "true" } : {}) }, "WebDAV"),
+                h("option", { value: "email", ...(job.delivery_method === "email" ? { selected: "true" } : {}) }, "Email"),
+            ),
+
+            h("div", { id: "webdav-config", style: job.delivery_method === "webdav" ? "" : "display:none" },
+                h("label", {}, "WebDAV URL"),
+                h("input", { name: "webdav_url", value: (job.delivery_config.url || "") }),
+                h("div", { className: "form-row" },
+                    h("div", {}, h("label", {}, "Username"), h("input", { name: "webdav_username", value: (job.delivery_config.username || "") })),
+                    h("div", {}, h("label", {}, "Password"), h("input", { name: "webdav_password", type: "password", placeholder: "Leave blank to keep current" })),
+                ),
+            ),
+            h("div", { id: "email-config", style: job.delivery_method === "email" ? "" : "display:none" },
+                h("label", {}, "Recipient"),
+                h("input", { name: "email_recipient", value: (job.delivery_config.recipient || "") }),
+            ),
+
+            h("label", {}, "Filename template"),
+            h("input", { name: "filename_template", value: job.filename_template }),
+
+            h("div", { style: "margin-bottom:12px" },
+                h("label", { style: "display:inline;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text)" },
+                    h("input", { type: "checkbox", name: "per_contract", style: "width:auto;margin-right:6px", ...(job.per_contract ? { checked: "true" } : {}) }),
+                    "One file per contract",
+                ),
+            ),
+            h("div", { style: "margin-bottom:16px" },
+                h("label", { style: "display:inline;font-weight:normal;text-transform:none;letter-spacing:normal;color:var(--text)" },
+                    h("input", { type: "checkbox", name: "enabled", style: "width:auto;margin-right:6px", ...(job.enabled ? { checked: "true" } : {}) }),
+                    "Enabled",
+                ),
+            ),
+
+            h("div", { className: "btn-row" },
+                h("a", { href: `#/billing/${jobId}`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
+                h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Save Changes"),
+            ),
+        );
+        app.appendChild(form);
+    } catch (e) { showAlert(e.message); }
+}
+
+async function renderAdminBillingJobs() {
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Billing Jobs" }));
+    app.appendChild(h("h2", {}, "All Billing Jobs"));
+    app.appendChild(h("p", { className: "page-desc" }, "All billing jobs across all users."));
+
+    try {
+        const jobs = await api("/api/billing/jobs?all=true");
+        if (!jobs.length) {
+            app.appendChild(h("p", { className: "empty" }, "No billing jobs configured."));
+            return;
+        }
+        for (const j of jobs) {
+            app.appendChild(
+                h("a", { href: `#/billing/${j.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
+                    h("div", { className: "card-header" },
+                        h("h3", {}, j.name),
+                        h("span", { className: j.enabled ? "badge badge-ready" : "badge badge-neutral" }, j.enabled ? "Enabled" : "Disabled"),
+                    ),
+                    h("p", { className: "meta" }, `Owner: ${j.owner_sub} — ${j.delivery_method} — ${j.schedule}`),
+                )
+            );
+        }
+    } catch (e) { showAlert(e.message); }
 }
 
 // --- Init ---

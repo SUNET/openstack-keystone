@@ -1,0 +1,321 @@
+"""Billing job API endpoints."""
+
+import hmac
+import json
+import logging
+from typing import Any
+
+from croniter import croniter
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.auth import get_current_user
+from app.billing_runner import execute_job, run_due_jobs
+from app.config import get_settings
+from app.crypto import encrypt_value
+from app.db import get_session
+from app.models import BillingJob, BillingJobContract, BillingJobRun, Contract, ContractAccess
+from app.schemas import (
+    BillingJobResponse,
+    BillingJobRunResponse,
+    CreateBillingJobRequest,
+    ManualRunRequest,
+    UpdateBillingJobRequest,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/billing", tags=["billing"])
+
+
+def _mask_config(config_json: str) -> dict:
+    """Parse delivery config and mask sensitive fields."""
+    config = json.loads(config_json)
+    if "password" in config:
+        config["password"] = "********"
+    return config
+
+
+def _job_to_response(job: BillingJob) -> BillingJobResponse:
+    """Build a response from a BillingJob model."""
+    contract_ids = [jc.contract_id for jc in (job.selected_contracts or [])]
+    return BillingJobResponse(
+        id=job.id,
+        name=job.name,
+        owner_sub=job.owner_sub,
+        all_contracts=job.all_contracts,
+        contract_ids=contract_ids,
+        schedule=job.schedule,
+        delivery_method=job.delivery_method,
+        delivery_config=_mask_config(job.delivery_config),
+        filename_template=job.filename_template,
+        per_contract=job.per_contract,
+        enabled=job.enabled,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+def _encrypt_delivery_config(config: dict) -> str:
+    """Encrypt password in delivery config and return as JSON string."""
+    config = dict(config)
+    if "password" in config and config["password"]:
+        config["password"] = encrypt_value(config["password"])
+    return json.dumps(config)
+
+
+async def _validate_contract_access(
+    contract_ids: list[int], user_sub: str, is_admin: bool, session: AsyncSession
+) -> None:
+    """Validate that the user has access to all specified contracts."""
+    if is_admin:
+        # Admin can access any contract, just verify they exist
+        for cid in contract_ids:
+            c = await session.get(Contract, cid)
+            if not c:
+                raise HTTPException(status_code=404, detail=f"Contract {cid} not found")
+    else:
+        for cid in contract_ids:
+            result = await session.execute(
+                select(ContractAccess).where(
+                    ContractAccess.contract_id == cid,
+                    ContractAccess.user_sub == user_sub,
+                )
+            )
+            if not result.scalar_one_or_none():
+                raise HTTPException(status_code=403, detail=f"No access to contract {cid}")
+
+
+def _validate_schedule(schedule: str) -> None:
+    """Validate a cron expression."""
+    try:
+        croniter(schedule)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid cron schedule: {e}")
+
+
+def _validate_delivery_config(method: str, config: dict) -> None:
+    """Validate delivery config structure."""
+    if method == "webdav":
+        if not config.get("url"):
+            raise HTTPException(status_code=400, detail="WebDAV URL required")
+    elif method == "email":
+        if not config.get("recipient"):
+            raise HTTPException(status_code=400, detail="Email recipient required")
+
+
+async def _require_job_access(
+    job_id: int, user: dict, session: AsyncSession
+) -> BillingJob:
+    """Load a job and verify the user has access."""
+    settings = get_settings()
+    result = await session.execute(
+        select(BillingJob)
+        .where(BillingJob.id == job_id)
+        .options(selectinload(BillingJob.selected_contracts))
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Billing job not found")
+    if job.owner_sub != user["sub"] and user["sub"] not in settings.admin_users:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return job
+
+
+# --- Endpoints ---
+
+
+@router.get("/jobs", response_model=list[BillingJobResponse])
+async def list_jobs(
+    all: bool = False,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    is_admin = user["sub"] in settings.admin_users
+
+    if all and is_admin:
+        result = await session.execute(
+            select(BillingJob)
+            .options(selectinload(BillingJob.selected_contracts))
+            .order_by(BillingJob.name)
+        )
+    else:
+        result = await session.execute(
+            select(BillingJob)
+            .where(BillingJob.owner_sub == user["sub"])
+            .options(selectinload(BillingJob.selected_contracts))
+            .order_by(BillingJob.name)
+        )
+    return [_job_to_response(j) for j in result.scalars()]
+
+
+@router.post("/jobs", response_model=BillingJobResponse, status_code=201)
+async def create_job(
+    req: CreateBillingJobRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    is_admin = user["sub"] in settings.admin_users
+
+    _validate_schedule(req.schedule)
+    _validate_delivery_config(req.delivery_method, req.delivery_config)
+
+    if not req.all_contracts:
+        await _validate_contract_access(req.contract_ids, user["sub"], is_admin, session)
+
+    job = BillingJob(
+        name=req.name,
+        owner_sub=user["sub"],
+        all_contracts=req.all_contracts,
+        schedule=req.schedule,
+        delivery_method=req.delivery_method,
+        delivery_config=_encrypt_delivery_config(req.delivery_config),
+        filename_template=req.filename_template,
+        per_contract=req.per_contract,
+        enabled=req.enabled,
+    )
+    session.add(job)
+    await session.flush()
+
+    if not req.all_contracts:
+        for cid in req.contract_ids:
+            session.add(BillingJobContract(billing_job_id=job.id, contract_id=cid))
+
+    await session.commit()
+    await session.refresh(job, ["selected_contracts"])
+    return _job_to_response(job)
+
+
+@router.get("/jobs/{job_id}", response_model=BillingJobResponse)
+async def get_job(
+    job_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await _require_job_access(job_id, user, session)
+    return _job_to_response(job)
+
+
+@router.patch("/jobs/{job_id}", response_model=BillingJobResponse)
+async def update_job(
+    job_id: int,
+    req: UpdateBillingJobRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    is_admin = user["sub"] in settings.admin_users
+    job = await _require_job_access(job_id, user, session)
+
+    if req.schedule is not None:
+        _validate_schedule(req.schedule)
+        job.schedule = req.schedule
+
+    if req.delivery_method is not None:
+        job.delivery_method = req.delivery_method
+
+    if req.delivery_config is not None:
+        _validate_delivery_config(
+            req.delivery_method or job.delivery_method, req.delivery_config
+        )
+        # If password is "********" (masked), keep the existing encrypted password
+        new_config = dict(req.delivery_config)
+        if new_config.get("password") == "********":
+            old_config = json.loads(job.delivery_config)
+            new_config["password"] = old_config.get("password", "")
+            job.delivery_config = json.dumps(new_config)
+        else:
+            job.delivery_config = _encrypt_delivery_config(new_config)
+
+    for field in ("name", "all_contracts", "filename_template", "per_contract", "enabled"):
+        val = getattr(req, field)
+        if val is not None:
+            setattr(job, field, val)
+
+    if req.contract_ids is not None:
+        if not (req.all_contracts if req.all_contracts is not None else job.all_contracts):
+            await _validate_contract_access(req.contract_ids, user["sub"], is_admin, session)
+            # Replace junction entries
+            for jc in list(job.selected_contracts):
+                await session.delete(jc)
+            await session.flush()
+            for cid in req.contract_ids:
+                session.add(BillingJobContract(billing_job_id=job.id, contract_id=cid))
+
+    await session.commit()
+    await session.refresh(job, ["selected_contracts"])
+    return _job_to_response(job)
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+async def delete_job(
+    job_id: int,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await _require_job_access(job_id, user, session)
+    await session.delete(job)
+    await session.commit()
+
+
+@router.get("/jobs/{job_id}/runs", response_model=list[BillingJobRunResponse])
+async def list_runs(
+    job_id: int,
+    limit: int = 20,
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _require_job_access(job_id, user, session)
+    result = await session.execute(
+        select(BillingJobRun)
+        .where(BillingJobRun.billing_job_id == job_id)
+        .order_by(BillingJobRun.started_at.desc())
+        .limit(min(limit, 100))
+    )
+    return result.scalars().all()
+
+
+@router.post("/jobs/{job_id}/run", response_model=BillingJobRunResponse)
+async def manual_run(
+    job_id: int,
+    req: ManualRunRequest = ManualRunRequest(),
+    user: dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await _require_job_access(job_id, user, session)
+    run = await execute_job(session, job, year=req.year, month=req.month)
+    return run
+
+
+# --- Trigger endpoint (called by CronJob) ---
+
+
+@router.post("/run-due")
+async def trigger_run_due(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    if not settings.billing_trigger_token:
+        raise HTTPException(status_code=503, detail="Billing trigger not configured")
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required")
+
+    token = auth[7:]
+    if not hmac.compare_digest(token, settings.billing_trigger_token):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    runs = await run_due_jobs(session)
+    return {
+        "triggered": len(runs),
+        "results": [
+            {"job_id": r.billing_job_id, "status": r.status}
+            for r in runs
+        ],
+    }
