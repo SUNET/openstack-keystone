@@ -69,15 +69,23 @@ class ContractAccess(Base):
 
 
 class ResourcePrice(Base):
-    """Global default price per resource type."""
+    """Global default price per resource type, optionally scoped to a metadata value."""
 
     __tablename__ = "resource_price"
+    __table_args__ = (
+        UniqueConstraint(
+            "resource_type", "metadata_field", "metadata_value",
+            name="uq_resource_price_type_meta",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    resource_type: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     unit: Mapped[str] = mapped_column(String(50), nullable=False)
     conversion_factor: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=1)
+    metadata_field: Mapped[str | None] = mapped_column(String(100))
+    metadata_value: Mapped[str | None] = mapped_column(String(255))
 
 
 class ContractPriceOverride(Base):

@@ -125,9 +125,35 @@ def _get_project_contracts(conn: openstack.connection.Connection) -> dict[str, t
     return project_map
 
 
-def _load_prices(sync_session: SyncSession) -> dict[str, Decimal]:
-    result = sync_session.execute(select(ResourcePrice))
-    return {p.resource_type: p.unit_price for p in result.scalars()}
+def _load_prices(sync_session: SyncSession) -> list[ResourcePrice]:
+    """Load all resource prices, ordered so specific (metadata) prices come first."""
+    result = sync_session.execute(
+        select(ResourcePrice).order_by(
+            ResourcePrice.resource_type,
+            ResourcePrice.metadata_field.desc(),  # non-null first
+        )
+    )
+    return list(result.scalars())
+
+
+def _find_price(
+    prices: list[ResourcePrice], metric: str, metadata: dict[str, str]
+) -> ResourcePrice | None:
+    """Find the most specific matching price for a metric + metadata combo.
+
+    Specific (metadata_field+metadata_value match) takes priority over base (no metadata).
+    """
+    base_match = None
+    for p in prices:
+        if p.resource_type != metric:
+            continue
+        if p.metadata_field and p.metadata_value:
+            # Specific price — check if metadata matches
+            if metadata.get(p.metadata_field) == p.metadata_value:
+                return p  # most specific, return immediately
+        elif not p.metadata_field:
+            base_match = p  # fallback
+    return base_match
 
 
 def _load_contract_overrides(sync_session: SyncSession) -> dict[int, dict[str, Decimal]]:
@@ -148,36 +174,58 @@ def _load_contract_ids(sync_session: SyncSession) -> dict[str, int]:
     return {c.contract_number: c.id for c in result.scalars()}
 
 
-def _query_cloudkitty(conn, begin, end, metric_types: list[str]) -> list[dict]:
-    """Query CloudKitty for usage data for the given metric types."""
+def _query_gnocchi_usage(
+    conn, begin: datetime, end: datetime, resource_type: str, metric_name: str,
+    groupby_fields: list[str],
+) -> list[dict]:
+    """Query Gnocchi for aggregated usage data grouped by project and metadata fields.
+
+    Returns a list of dicts with 'project_id', 'metadata' (dict), and 'quantity'
+    (count of data points — represents collection intervals).
+    """
     import httpx
     token = conn.auth_token
-    endpoint = conn.rating.get_endpoint().rstrip("/")
-    base = endpoint.rsplit("/v", 1)[0]
+    gnocchi = "http://gnocchi-api.openstack.svc.cluster.local:8041"
 
-    summaries = []
-    for metric_name in metric_types:
-        try:
-            resp = httpx.get(
-                f"{base}/v1/report/summary",
-                params={
-                    "begin": begin.isoformat(),
-                    "end": end.isoformat(),
-                    "groupby": "project_id",
-                    "service": metric_name,
-                },
-                headers={"X-Auth-Token": token},
-            )
-            if resp.status_code == 200:
-                for entry in resp.json().get("summary", []):
-                    summaries.append({
-                        "project_id": entry.get("project_id", entry.get("tenant_id", "")),
-                        "metric": metric_name,
-                        "quantity": entry.get("qty", entry.get("res_qty", 0)),
-                    })
-        except Exception:
-            logger.exception("Failed to query CloudKitty for %s", metric_name)
-    return summaries
+    params = [
+        ("start", begin.isoformat()),
+        ("stop", end.isoformat()),
+        ("aggregation", "mean"),
+        ("needed_overlap", "0"),
+        ("groupby", "project_id"),
+    ]
+    for field in groupby_fields:
+        params.append(("groupby", field))
+
+    try:
+        resp = httpx.post(
+            f"{gnocchi}/v1/aggregation/resource/{resource_type}/metric/{metric_name}",
+            params=params,
+            json={},  # empty search = all resources
+            headers={"X-Auth-Token": token},
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            logger.warning("Gnocchi aggregation for %s/%s returned %d", resource_type, metric_name, resp.status_code)
+            return []
+
+        results = []
+        for group in resp.json():
+            group_info = group.get("group", {})
+            measures = group.get("measures", [])
+            # Count of data points = number of collection intervals
+            quantity = len(measures)
+            project_id = group_info.pop("project_id", "")
+            results.append({
+                "project_id": project_id,
+                "metric": metric_name,
+                "metadata": group_info,  # remaining fields (e.g. flavor_name)
+                "quantity": quantity,
+            })
+        return results
+    except Exception:
+        logger.exception("Failed to query Gnocchi for %s/%s", resource_type, metric_name)
+        return []
 
 
 def generate_billing_csv(
@@ -198,67 +246,96 @@ def generate_billing_csv(
     db = session_factory()
 
     try:
-        # Load prices from DB — resource_type is the CloudKitty metric type
-        global_prices = _load_prices(db)  # {resource_type: unit_price}
-        # Also load units and conversion factors from ResourcePrice
-        price_meta = {}
-        for p in db.execute(select(ResourcePrice)).scalars():
-            price_meta[p.resource_type] = {
-                "unit": p.unit,
-                "conversion_factor": p.conversion_factor or Decimal(1),
-            }
-
+        # Load prices from DB
+        prices = _load_prices(db)
         contract_overrides = _load_contract_overrides(db)
         rebates = _load_rebates(db)
         contract_id_map = _load_contract_ids(db)
 
-        # Only query CloudKitty for metric types we have prices for
-        priced_metrics = list(global_prices.keys())
-        # Also include metrics that have contract overrides
+        # Determine which metric types to query, and their metadata fields
+        # Group prices by resource_type to find which metadata fields are used
+        metric_metadata_fields: dict[str, set[str]] = {}
+        for p in prices:
+            if p.resource_type not in metric_metadata_fields:
+                metric_metadata_fields[p.resource_type] = set()
+            if p.metadata_field:
+                metric_metadata_fields[p.resource_type].add(p.metadata_field)
+
+        # Also include metrics from contract overrides
         for overrides in contract_overrides.values():
             for rt in overrides:
-                if rt not in priced_metrics:
-                    priced_metrics.append(rt)
+                if rt not in metric_metadata_fields:
+                    metric_metadata_fields[rt] = set()
 
         conn = openstack.connect(cloud=cloud_name)
         project_contracts = _get_project_contracts(conn)
-        summaries = _query_cloudkitty(conn, period_start, period_end, priced_metrics)
-
         contract_set = set(contract_numbers)
+
+        # Map metric types to Gnocchi resource types
+        # CloudKitty config uses these resource_type mappings
+        METRIC_RESOURCE_TYPES = {
+            "cpu": "instance",
+            "instance": "instance",
+            "image.size": "image",
+            "ip.floating": "network",
+            "network.incoming.bytes.rate": "instance_network_interface",
+            "network.outgoing.bytes.rate": "instance_network_interface",
+            "radosgw.objects.size": "ceph_account",
+            "volume.size": "volume",
+        }
 
         output = io.StringIO()
         writer = csv.writer(output, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
 
-        for entry in summaries:
-            pid = entry["project_id"]
-            if pid not in project_contracts:
-                continue
-            project_name, cn = project_contracts[pid]
-            if cn not in contract_set:
-                continue
+        for metric, meta_fields in metric_metadata_fields.items():
+            resource_type = METRIC_RESOURCE_TYPES.get(metric, metric)
+            groupby = list(meta_fields)
 
-            metric = entry["metric"]
-            raw_qty = Decimal(str(entry["quantity"]))
-            meta = price_meta.get(metric, {"unit": "", "conversion_factor": Decimal(1)})
-            unit = meta["unit"]
-            conversion = meta["conversion_factor"]
+            usage = _query_gnocchi_usage(
+                conn, period_start, period_end,
+                resource_type, metric, groupby,
+            )
 
-            # Apply conversion factor (e.g. raw data points -> hours)
-            quantity = raw_qty * conversion
+            for entry in usage:
+                pid = entry["project_id"]
+                if pid not in project_contracts:
+                    continue
+                project_name, cn = project_contracts[pid]
+                if cn not in contract_set:
+                    continue
 
-            contract_id = contract_id_map.get(cn)
-            unit_price = Decimal(0)
-            if contract_id and contract_id in contract_overrides:
-                unit_price = contract_overrides[contract_id].get(metric, Decimal(0))
-            if unit_price == 0:
-                unit_price = global_prices.get(metric, Decimal(0))
+                metadata = entry.get("metadata", {})
+                raw_qty = Decimal(str(entry["quantity"]))
 
-            cost = quantity * unit_price
-            if contract_id and contract_id in rebates:
-                cost = cost * (1 - rebates[contract_id] / 100)
+                # Find the best matching price (specific metadata > base)
+                price = _find_price(prices, metric, metadata)
+                if not price:
+                    continue
 
-            volume = f"{quantity:.2f} {unit}".replace(".", ",")
-            writer.writerow([cn, project_name, metric, volume, round(cost)])
+                conversion = price.conversion_factor or Decimal(1)
+                quantity = raw_qty * conversion
+                unit = price.unit
+
+                # Determine unit_price: contract override > global
+                contract_id = contract_id_map.get(cn)
+                unit_price = price.unit_price
+                if contract_id and contract_id in contract_overrides:
+                    override_price = contract_overrides[contract_id].get(metric, None)
+                    if override_price is not None:
+                        unit_price = override_price
+
+                cost = quantity * unit_price
+                if contract_id and contract_id in rebates:
+                    cost = cost * (1 - rebates[contract_id] / 100)
+
+                # Label includes metadata if present (e.g. "instance (b2.c4r8)")
+                label = metric
+                if metadata:
+                    meta_str = ", ".join(f"{v}" for v in metadata.values())
+                    label = f"{metric} ({meta_str})"
+
+                volume = f"{quantity:.2f} {unit}".replace(".", ",")
+                writer.writerow([cn, project_name, label, volume, round(cost)])
 
         return output.getvalue()
     finally:

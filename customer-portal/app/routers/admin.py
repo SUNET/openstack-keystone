@@ -336,47 +336,50 @@ async def list_prices(
     return result.scalars().all()
 
 
-@router.put("/pricing/{resource_type}", response_model=ResourcePriceResponse)
-async def set_price(
-    resource_type: str,
+@router.post("/pricing", response_model=ResourcePriceResponse, status_code=201)
+async def create_price(
     req: ResourcePriceRequest,
     _user=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Set or update the global price for a resource type."""
-    result = await session.execute(
-        select(ResourcePrice).where(ResourcePrice.resource_type == resource_type)
+    """Create a price for a resource type, optionally scoped to a metadata value."""
+    # Check for duplicate
+    query = select(ResourcePrice).where(
+        ResourcePrice.resource_type == req.resource_type,
     )
-    price = result.scalar_one_or_none()
-
-    if price:
-        price.unit_price = req.unit_price
-        price.unit = req.unit
-        price.conversion_factor = req.conversion_factor
-    else:
-        price = ResourcePrice(
-            resource_type=req.resource_type,
-            unit_price=req.unit_price,
-            unit=req.unit,
-            conversion_factor=req.conversion_factor,
+    if req.metadata_field:
+        query = query.where(
+            ResourcePrice.metadata_field == req.metadata_field,
+            ResourcePrice.metadata_value == req.metadata_value,
         )
-        session.add(price)
+    else:
+        query = query.where(ResourcePrice.metadata_field.is_(None))
 
+    existing = await session.execute(query)
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Price already exists for this combination")
+
+    price = ResourcePrice(
+        resource_type=req.resource_type,
+        unit_price=req.unit_price,
+        unit=req.unit,
+        conversion_factor=req.conversion_factor,
+        metadata_field=req.metadata_field,
+        metadata_value=req.metadata_value,
+    )
+    session.add(price)
     await session.commit()
     await session.refresh(price)
     return price
 
 
-@router.delete("/pricing/{resource_type}", status_code=204)
+@router.delete("/pricing/{price_id}", status_code=204)
 async def delete_price(
-    resource_type: str,
+    price_id: int,
     _user=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(ResourcePrice).where(ResourcePrice.resource_type == resource_type)
-    )
-    price = result.scalar_one_or_none()
+    price = await session.get(ResourcePrice, price_id)
     if not price:
         raise HTTPException(status_code=404, detail="Price not found")
 

@@ -85,6 +85,8 @@ class ResourcePriceRequest(BaseModel):
     unit_price: Decimal = Field(ge=0)
     unit: str = Field(min_length=1, max_length=50)
     conversion_factor: Decimal = Field(default=1, gt=0)
+    metadata_field: str | None = Field(default=None, max_length=100)
+    metadata_value: str | None = Field(default=None, max_length=255)
 
 
 class ResourcePriceResponse(BaseModel):
@@ -93,6 +95,8 @@ class ResourcePriceResponse(BaseModel):
     unit_price: Decimal
     unit: str
     conversion_factor: Decimal
+    metadata_field: str | None = None
+    metadata_value: str | None = None
 
     model_config = {"from_attributes": True}
 
