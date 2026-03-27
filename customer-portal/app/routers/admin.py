@@ -363,7 +363,6 @@ async def create_price(
         resource_type=req.resource_type,
         unit_price=req.unit_price,
         unit=req.unit,
-        conversion_factor=req.conversion_factor,
         metadata_field=req.metadata_field,
         metadata_value=req.metadata_value,
     )

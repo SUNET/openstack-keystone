@@ -83,7 +83,6 @@ class ResourcePrice(Base):
     resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     unit: Mapped[str] = mapped_column(String(50), nullable=False)
-    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=1)
     metadata_field: Mapped[str | None] = mapped_column(String(100))
     metadata_value: Mapped[str | None] = mapped_column(String(255))
 

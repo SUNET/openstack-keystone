@@ -206,14 +206,24 @@ def _load_contract_ids(sync_session: SyncSession) -> dict[str, int]:
     return {c.contract_number: c.id for c in result.scalars()}
 
 
+def _detect_granularity_seconds(measures: list) -> float:
+    """Detect the granularity in seconds from Gnocchi measure timestamps."""
+    if len(measures) < 2:
+        return 300  # default to 5 minutes if we can't detect
+    from dateutil.parser import parse as parse_dt
+    t1 = parse_dt(measures[0][0]) if isinstance(measures[0][0], str) else measures[0][0]
+    t2 = parse_dt(measures[1][0]) if isinstance(measures[1][0], str) else measures[1][0]
+    return max((t2 - t1).total_seconds(), 1)
+
+
 def _query_gnocchi_usage(
     conn, begin: datetime, end: datetime, resource_type: str, metric_name: str,
     groupby_fields: list[str],
 ) -> list[dict]:
     """Query Gnocchi for aggregated usage data grouped by project and metadata fields.
 
-    Returns a list of dicts with 'project_id', 'metadata' (dict), and 'quantity'
-    (count of data points — represents collection intervals).
+    Returns a list of dicts with 'project_id', 'metadata' (dict), and 'hours'
+    (total hours of usage, calculated from data point count and detected granularity).
     """
     import httpx
     token = conn.auth_token
@@ -242,17 +252,28 @@ def _query_gnocchi_usage(
             return []
 
         results = []
+        granularity_detected = False
+        granularity_seconds = 300  # default
+
         for group in resp.json():
             group_info = group.get("group", {})
             measures = group.get("measures", [])
-            # Count of data points = number of collection intervals
-            quantity = len(measures)
+
+            # Detect granularity from the first group that has enough data
+            if not granularity_detected and len(measures) >= 2:
+                granularity_seconds = _detect_granularity_seconds(measures)
+                granularity_detected = True
+                logger.debug("Detected granularity: %ds for %s/%s", granularity_seconds, resource_type, metric_name)
+
+            # Convert data point count to hours
+            hours = len(measures) * granularity_seconds / 3600.0
+
             project_id = group_info.pop("project_id", "")
             results.append({
                 "project_id": project_id,
                 "metric": metric_name,
-                "metadata": group_info,  # remaining fields (e.g. flavor_name)
-                "quantity": quantity,
+                "metadata": group_info,
+                "hours": hours,
             })
         return results
     except Exception:
@@ -337,16 +358,18 @@ def generate_billing_csv(
                     continue
 
                 metadata = entry.get("metadata", {})
-                raw_qty = Decimal(str(entry["quantity"]))
+                hours = Decimal(str(entry["hours"]))
 
                 # Find the best matching price (specific metadata > base)
                 price = _find_price(prices, metric, metadata)
                 if not price:
                     continue
 
-                conversion = price.conversion_factor or Decimal(1)
-                quantity = raw_qty * conversion
                 unit = price.unit
+                # For time-based metrics, quantity = hours
+                # For size-based metrics (volume.size, radosgw.objects.size),
+                # quantity is also expressed as hours of having that size
+                quantity = hours
 
                 # Determine unit_price: contract override > global
                 contract_id = contract_id_map.get(cn)
