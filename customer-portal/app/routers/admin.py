@@ -352,11 +352,13 @@ async def set_price(
     if price:
         price.unit_price = req.unit_price
         price.unit = req.unit
+        price.conversion_factor = req.conversion_factor
     else:
         price = ResourcePrice(
             resource_type=req.resource_type,
             unit_price=req.unit_price,
             unit=req.unit,
+            conversion_factor=req.conversion_factor,
         )
         session.add(price)
 

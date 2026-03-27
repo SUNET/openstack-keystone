@@ -674,7 +674,7 @@ async function renderAdminPricing() {
             const ul = h("ul", { className: "user-list" });
             for (const p of prices) {
                 ul.appendChild(h("li", {},
-                    h("span", { className: "user-sub" }, `${p.resource_type}: ${p.unit_price} SEK / ${p.unit}`),
+                    h("span", { className: "user-sub" }, `${p.resource_type}: ${p.unit_price} SEK / ${p.unit}` + (p.conversion_factor != 1 ? ` (factor: ${p.conversion_factor})` : "")),
                     h("button", { className: "btn btn-danger", onclick: async () => {
                         await api(`/api/admin/pricing/${encodeURIComponent(p.resource_type)}`, { method: "DELETE" });
                         navigate("/admin/pricing");
@@ -697,12 +697,8 @@ async function renderAdminPricing() {
     const metricUnits = {};
     for (const m of metrics) metricUnits[m.metric_type] = m.unit || "";
 
-    const unitInput = h("input", { name: "unit", required: "true", readonly: metrics.length ? "true" : undefined, placeholder: "unit" });
-
     const metricSelect = metrics.length
-        ? h("select", { name: "resource_type", required: "true", onchange: (e) => {
-            unitInput.value = metricUnits[e.target.value] || "";
-          }},
+        ? h("select", { name: "resource_type", required: "true" },
             h("option", { value: "" }, "-- Select metric --"),
             ...metrics.map(m => h("option", { value: m.metric_type }, `${m.metric_type} (${m.unit})`)),
           )
@@ -712,21 +708,25 @@ async function renderAdminPricing() {
         e.preventDefault();
         const rt = form.querySelector('[name="resource_type"]').value.trim();
         const price = form.querySelector('[name="unit_price"]').value.trim();
-        const unit = form.querySelector('[name="unit"]').value.trim();
-        if (!rt || !unit) return;
+        const factor = form.querySelector('[name="conversion_factor"]').value.trim();
+        const unit = metricUnits[rt] || rt;
+        if (!rt) return;
         try {
             await api(`/api/admin/pricing/${encodeURIComponent(rt)}`, {
-                method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit }),
+                method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit, conversion_factor: parseFloat(factor) }),
             });
             navigate("/admin/pricing");
         } catch (err) { showAlert(err.message); }
     }},
         h("div", { className: "form-row" },
             h("div", {}, h("label", {}, "Resource type"), metricSelect),
-            h("div", {}, h("label", {}, "Unit"), unitInput),
+            h("div", {}, h("label", {}, "Unit price (SEK)"), h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true", placeholder: "0.00" })),
         ),
-        h("label", {}, "Unit price (SEK)"),
-        h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true", placeholder: "0.00" }),
+        h("label", {}, "Conversion factor"),
+        h("input", { name: "conversion_factor", type: "number", min: "0", step: "0.000001", required: "true", value: "1", placeholder: "1" }),
+        h("p", { className: "meta", style: "margin-top:-8px;margin-bottom:12px" },
+            "Multiplied with raw CloudKitty quantity. E.g. 0.166667 converts 10-min data points to hours."
+        ),
         h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Price"),
     );
     app.appendChild(form);

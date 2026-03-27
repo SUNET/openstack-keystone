@@ -84,6 +84,7 @@ class ResourcePriceRequest(BaseModel):
     resource_type: str = Field(min_length=1, max_length=100)
     unit_price: Decimal = Field(ge=0)
     unit: str = Field(min_length=1, max_length=50)
+    conversion_factor: Decimal = Field(default=1, gt=0)
 
 
 class ResourcePriceResponse(BaseModel):
@@ -91,6 +92,7 @@ class ResourcePriceResponse(BaseModel):
     resource_type: str
     unit_price: Decimal
     unit: str
+    conversion_factor: Decimal
 
     model_config = {"from_attributes": True}
 

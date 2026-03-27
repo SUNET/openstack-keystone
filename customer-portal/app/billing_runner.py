@@ -200,10 +200,13 @@ def generate_billing_csv(
     try:
         # Load prices from DB — resource_type is the CloudKitty metric type
         global_prices = _load_prices(db)  # {resource_type: unit_price}
-        # Also load units from ResourcePrice
-        price_units = {}
+        # Also load units and conversion factors from ResourcePrice
+        price_meta = {}
         for p in db.execute(select(ResourcePrice)).scalars():
-            price_units[p.resource_type] = p.unit
+            price_meta[p.resource_type] = {
+                "unit": p.unit,
+                "conversion_factor": p.conversion_factor or Decimal(1),
+            }
 
         contract_overrides = _load_contract_overrides(db)
         rebates = _load_rebates(db)
@@ -235,8 +238,13 @@ def generate_billing_csv(
                 continue
 
             metric = entry["metric"]
-            quantity = entry["quantity"]
-            unit = price_units.get(metric, "")
+            raw_qty = Decimal(str(entry["quantity"]))
+            meta = price_meta.get(metric, {"unit": "", "conversion_factor": Decimal(1)})
+            unit = meta["unit"]
+            conversion = meta["conversion_factor"]
+
+            # Apply conversion factor (e.g. raw data points -> hours)
+            quantity = raw_qty * conversion
 
             contract_id = contract_id_map.get(cn)
             unit_price = Decimal(0)
@@ -245,7 +253,7 @@ def generate_billing_csv(
             if unit_price == 0:
                 unit_price = global_prices.get(metric, Decimal(0))
 
-            cost = Decimal(str(quantity)) * unit_price
+            cost = quantity * unit_price
             if contract_id and contract_id in rebates:
                 cost = cost * (1 - rebates[contract_id] / 100)
 
