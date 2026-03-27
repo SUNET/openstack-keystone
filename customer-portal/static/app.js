@@ -94,8 +94,7 @@ async function api(path, opts = {}) {
 function h(tag, attrs = {}, ...children) {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
-        if (k === "onclick") el.addEventListener("click", v);
-        else if (k === "onsubmit") el.addEventListener("submit", v);
+        if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
         else if (k === "className") el.className = v;
         else if (k === "htmlFor") el.setAttribute("for", v);
         else el.setAttribute(k, v);
@@ -689,11 +688,24 @@ async function renderAdminPricing() {
     } catch (e) { showAlert(e.message); }
 
     app.appendChild(h("div", { className: "section-label" }, "Add Price"));
+
+    // Fetch available metrics from CloudKitty
+    let metrics = [];
+    try { metrics = await api("/api/admin/pricing/metrics"); } catch (e) { /* ignore */ }
+
+    const metricSelect = metrics.length
+        ? h("select", { name: "resource_type", required: "true" },
+            h("option", { value: "" }, "-- Select metric --"),
+            ...metrics.map(m => h("option", { value: m.metric_type }, m.metric_type)),
+          )
+        : h("input", { name: "resource_type", required: "true", placeholder: "metric type (CloudKitty unavailable)" });
+
     const form = h("form", { className: "form-card", onsubmit: async (e) => {
         e.preventDefault();
         const rt = form.querySelector('[name="resource_type"]').value.trim();
         const price = form.querySelector('[name="unit_price"]').value.trim();
         const unit = form.querySelector('[name="unit"]').value.trim();
+        if (!rt) return;
         try {
             await api(`/api/admin/pricing/${encodeURIComponent(rt)}`, {
                 method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit }),
@@ -702,7 +714,7 @@ async function renderAdminPricing() {
         } catch (err) { showAlert(err.message); }
     }},
         h("div", { className: "form-row" },
-            h("div", {}, h("label", {}, "Resource type"), h("input", { name: "resource_type", required: "true", placeholder: "Compute" })),
+            h("div", {}, h("label", {}, "Resource type (from CloudKitty)"), metricSelect),
             h("div", {}, h("label", {}, "Unit"), h("input", { name: "unit", required: "true", placeholder: "timmar" })),
         ),
         h("label", {}, "Unit price (SEK)"),
@@ -710,6 +722,10 @@ async function renderAdminPricing() {
         h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Price"),
     );
     app.appendChild(form);
+
+    if (!metrics.length) {
+        app.appendChild(h("p", { className: "meta" }, "Could not connect to CloudKitty to discover available metrics. You can enter metric types manually."));
+    }
 }
 
 // ========== BILLING VIEWS ==========

@@ -1,5 +1,7 @@
 """Admin endpoints for managing customers, contracts, access, and pricing."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -308,6 +310,19 @@ async def revoke_access(
 
 
 # --- Global Pricing ---
+
+
+@router.get("/pricing/metrics")
+async def list_cloudkitty_metrics(
+    _user=Depends(require_admin),
+):
+    """Discover available metric types from CloudKitty."""
+    from app.billing_runner import discover_cloudkitty_metrics
+    from app.config import get_settings
+
+    settings = get_settings()
+    metrics = await asyncio.to_thread(discover_cloudkitty_metrics, settings.openstack_cloud)
+    return metrics
 
 
 @router.get("/pricing", response_model=list[ResourcePriceResponse])

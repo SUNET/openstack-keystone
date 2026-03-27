@@ -34,25 +34,33 @@ logger = logging.getLogger(__name__)
 
 CONTRACT_TAG_PREFIX = "contract:"
 
-METRIC_LABELS = {
-    "instance": "Compute",
-    "volume.size": "Storage",
-    "radosgw.objects.size": "S3 Storage",
-    "image.size": "Image Storage",
-    "ip.floating": "Floating IP",
-    "network.incoming.bytes.rate": "Network In",
-    "network.outgoing.bytes.rate": "Network Out",
-}
 
-METRIC_UNITS = {
-    "instance": "timmar",
-    "volume.size": "Gbyte",
-    "radosgw.objects.size": "Gbyte",
-    "image.size": "Mbyte",
-    "ip.floating": "st",
-    "network.incoming.bytes.rate": "MB",
-    "network.outgoing.bytes.rate": "MB",
-}
+def discover_cloudkitty_metrics(cloud_name: str = "openstack") -> list[dict]:
+    """Query CloudKitty to discover available metric types.
+
+    Returns a list of dicts with 'metric_type' and 'unit' for each
+    metric that CloudKitty is collecting. Uses the /v2/summary endpoint
+    grouped by type to find what actually has data.
+    """
+    try:
+        conn = openstack.connect(cloud=cloud_name)
+        result = conn.rating.get("/v2/summary", params={"groupby": "type"})
+        if result.status_code != 200:
+            logger.warning("CloudKitty summary query returned %d", result.status_code)
+            return []
+
+        metrics = []
+        seen = set()
+        for entry in result.json().get("results", []):
+            metric_type = entry.get("type", "")
+            if metric_type and metric_type not in seen:
+                seen.add(metric_type)
+                metrics.append({"metric_type": metric_type})
+
+        return sorted(metrics, key=lambda m: m["metric_type"])
+    except Exception:
+        logger.exception("Failed to discover CloudKitty metrics")
+        return []
 
 
 # --- Billing period ---
@@ -137,9 +145,10 @@ def _load_contract_ids(sync_session: SyncSession) -> dict[str, int]:
     return {c.contract_number: c.id for c in result.scalars()}
 
 
-def _query_cloudkitty(conn, begin, end) -> list[dict]:
+def _query_cloudkitty(conn, begin, end, metric_types: list[str]) -> list[dict]:
+    """Query CloudKitty for usage data for the given metric types."""
     summaries = []
-    for metric_name in METRIC_LABELS:
+    for metric_name in metric_types:
         try:
             result = conn.rating.get(
                 "/v2/summary",
@@ -180,16 +189,29 @@ def generate_billing_csv(
     db = session_factory()
 
     try:
-        global_prices = _load_prices(db)
+        # Load prices from DB — resource_type is the CloudKitty metric type
+        global_prices = _load_prices(db)  # {resource_type: unit_price}
+        # Also load units from ResourcePrice
+        price_units = {}
+        for p in db.execute(select(ResourcePrice)).scalars():
+            price_units[p.resource_type] = p.unit
+
         contract_overrides = _load_contract_overrides(db)
         rebates = _load_rebates(db)
         contract_id_map = _load_contract_ids(db)
 
+        # Only query CloudKitty for metric types we have prices for
+        priced_metrics = list(global_prices.keys())
+        # Also include metrics that have contract overrides
+        for overrides in contract_overrides.values():
+            for rt in overrides:
+                if rt not in priced_metrics:
+                    priced_metrics.append(rt)
+
         conn = openstack.connect(cloud=cloud_name)
         project_contracts = _get_project_contracts(conn)
-        summaries = _query_cloudkitty(conn, period_start, period_end)
+        summaries = _query_cloudkitty(conn, period_start, period_end, priced_metrics)
 
-        # Filter to only requested contracts
         contract_set = set(contract_numbers)
 
         output = io.StringIO()
@@ -203,26 +225,23 @@ def generate_billing_csv(
             if cn not in contract_set:
                 continue
 
-            label = METRIC_LABELS.get(entry["metric"])
-            if not label:
-                continue
-
+            metric = entry["metric"]
             quantity = entry["quantity"]
-            unit = METRIC_UNITS.get(entry["metric"], "")
+            unit = price_units.get(metric, "")
 
             contract_id = contract_id_map.get(cn)
             unit_price = Decimal(0)
             if contract_id and contract_id in contract_overrides:
-                unit_price = contract_overrides[contract_id].get(label, Decimal(0))
+                unit_price = contract_overrides[contract_id].get(metric, Decimal(0))
             if unit_price == 0:
-                unit_price = global_prices.get(label, Decimal(0))
+                unit_price = global_prices.get(metric, Decimal(0))
 
             cost = Decimal(str(quantity)) * unit_price
             if contract_id and contract_id in rebates:
                 cost = cost * (1 - rebates[contract_id] / 100)
 
             volume = f"{quantity:.2f} {unit}".replace(".", ",")
-            writer.writerow([cn, project_name, label, volume, round(cost)])
+            writer.writerow([cn, project_name, metric, volume, round(cost)])
 
         return output.getvalue()
     finally:
