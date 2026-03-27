@@ -693,10 +693,18 @@ async function renderAdminPricing() {
     let metrics = [];
     try { metrics = await api("/api/admin/pricing/metrics"); } catch (e) { /* ignore */ }
 
+    // Build a map of metric_type -> unit from CloudKitty
+    const metricUnits = {};
+    for (const m of metrics) metricUnits[m.metric_type] = m.unit || "";
+
+    const unitInput = h("input", { name: "unit", required: "true", readonly: metrics.length ? "true" : undefined, placeholder: "unit" });
+
     const metricSelect = metrics.length
-        ? h("select", { name: "resource_type", required: "true" },
+        ? h("select", { name: "resource_type", required: "true", onchange: (e) => {
+            unitInput.value = metricUnits[e.target.value] || "";
+          }},
             h("option", { value: "" }, "-- Select metric --"),
-            ...metrics.map(m => h("option", { value: m.metric_type }, m.metric_type)),
+            ...metrics.map(m => h("option", { value: m.metric_type }, `${m.metric_type} (${m.unit})`)),
           )
         : h("input", { name: "resource_type", required: "true", placeholder: "metric type (CloudKitty unavailable)" });
 
@@ -705,7 +713,7 @@ async function renderAdminPricing() {
         const rt = form.querySelector('[name="resource_type"]').value.trim();
         const price = form.querySelector('[name="unit_price"]').value.trim();
         const unit = form.querySelector('[name="unit"]').value.trim();
-        if (!rt) return;
+        if (!rt || !unit) return;
         try {
             await api(`/api/admin/pricing/${encodeURIComponent(rt)}`, {
                 method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit }),
@@ -714,8 +722,8 @@ async function renderAdminPricing() {
         } catch (err) { showAlert(err.message); }
     }},
         h("div", { className: "form-row" },
-            h("div", {}, h("label", {}, "Resource type (from CloudKitty)"), metricSelect),
-            h("div", {}, h("label", {}, "Unit"), h("input", { name: "unit", required: "true", placeholder: "timmar" })),
+            h("div", {}, h("label", {}, "Resource type"), metricSelect),
+            h("div", {}, h("label", {}, "Unit"), unitInput),
         ),
         h("label", {}, "Unit price (SEK)"),
         h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true", placeholder: "0.00" }),
