@@ -46,6 +46,20 @@ function h(tag, attrs = {}, ...children) {
 
 function clear(el) { el.innerHTML = ""; return el; }
 
+function breadcrumbs(...items) {
+    // items: [{label, onclick?}, ...] — last item is current (no link)
+    const bc = h("nav", { className: "breadcrumbs" });
+    items.forEach((item, i) => {
+        if (i > 0) bc.appendChild(h("span", { className: "sep" }, "/"));
+        if (i < items.length - 1 && item.onclick) {
+            bc.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); item.onclick(); } }, item.label));
+        } else {
+            bc.appendChild(h("span", { className: "current" }, item.label));
+        }
+    });
+    return bc;
+}
+
 function phaseBadge(phase) {
     if (!phase) return h("span", { className: "badge badge-pending" }, "Unknown");
     if (phase === "Ready") return h("span", { className: "badge badge-ready" }, "Ready");
@@ -68,8 +82,8 @@ function renderNav() {
     if (currentUser.is_admin) {
         nav.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderAdminCustomers(); } }, "Admin"));
     }
-    nav.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); } }, currentUser.email || currentUser.sub));
-    nav.appendChild(h("a", { href: "/auth/logout" }, "Sign out"));
+    nav.appendChild(h("a", { href: "#", className: "nav-user" }, currentUser.email || currentUser.sub));
+    nav.appendChild(h("a", { href: "/auth/logout", className: "nav-logout" }, "Sign out"));
 }
 
 // --- Login ---
@@ -78,6 +92,7 @@ function renderLogin() {
     renderNav();
     clear(app).appendChild(
         h("div", { className: "login-prompt" },
+            h("h2", {}, "SUNET Cloud Portal"),
             h("p", {}, "Sign in to manage your cloud projects."),
             h("a", { href: "/auth/login", className: "btn btn-primary" }, "Sign in with SSO"),
         )
@@ -87,7 +102,11 @@ function renderLogin() {
 // --- Customer views: Contracts ---
 
 async function renderContracts() {
-    clear(app).appendChild(h("h2", {}, "My Contracts"));
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "My Contracts" }));
+    app.appendChild(h("h2", {}, "My Contracts"));
+    app.appendChild(h("p", { className: "page-desc" }, "Select a contract to view and manage its projects."));
+
     try {
         const user = await api("/api/me");
         currentUser = user;
@@ -97,14 +116,15 @@ async function renderContracts() {
             return;
         }
         for (const c of user.contracts) {
-            const card = h("div", { className: "card", onclick: () => renderContractProjects(c.contract_number) },
-                h("div", { className: "card-header" },
-                    h("h3", {}, c.customer.name + " — " + c.contract_number),
-                ),
-                c.description ? h("p", { className: "meta" }, c.description) : null,
+            app.appendChild(
+                h("div", { className: "card card-clickable", onclick: () => renderContractProjects(c.contract_number) },
+                    h("div", { className: "card-header" },
+                        h("h3", {}, c.contract_number),
+                        h("span", { className: "badge badge-neutral" }, c.customer.domain),
+                    ),
+                    h("p", { className: "meta" }, c.customer.name + (c.description ? " — " + c.description : "")),
+                )
             );
-            card.style.cursor = "pointer";
-            app.appendChild(card);
         }
     } catch (e) {
         showAlert(e.message);
@@ -115,14 +135,20 @@ async function renderContracts() {
 
 async function renderContractProjects(contractNumber) {
     clear(app);
-    app.appendChild(h("h2", {}, "Projects — " + contractNumber));
 
-    // Find the customer domain for this contract
     const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
+    const customerName = contractInfo ? contractInfo.customer.name : "";
     const customerDomain = contractInfo ? contractInfo.customer.domain : "";
 
+    app.appendChild(breadcrumbs(
+        { label: "My Contracts", onclick: renderContracts },
+        { label: contractNumber },
+    ));
+    app.appendChild(h("h2", {}, "Projects"));
+    app.appendChild(h("p", { className: "page-desc" }, customerName + " — " + contractNumber));
+
     app.appendChild(
-        h("button", { className: "btn btn-primary", style: "margin-bottom:1rem", onclick: () => renderCreateProject(contractNumber, customerDomain) }, "+ New Project")
+        h("button", { className: "btn btn-primary btn-small", style: "margin-bottom:16px", onclick: () => renderCreateProject(contractNumber, customerDomain) }, "+ New Project")
     );
 
     try {
@@ -152,9 +178,16 @@ async function renderContractProjects(contractNumber) {
 
 function renderCreateProject(contractNumber, customerDomain) {
     clear(app);
-    app.appendChild(h("h2", {}, "Create Project under " + contractNumber));
 
-    const form = h("form", { onsubmit: async (e) => {
+    app.appendChild(breadcrumbs(
+        { label: "My Contracts", onclick: renderContracts },
+        { label: contractNumber, onclick: () => renderContractProjects(contractNumber) },
+        { label: "New Project" },
+    ));
+    app.appendChild(h("h2", {}, "New Project"));
+    app.appendChild(h("p", { className: "page-desc" }, "Create a new project under contract " + contractNumber + "."));
+
+    const form = h("form", { className: "form-card", onsubmit: async (e) => {
         e.preventDefault();
         const name = form.querySelector('[name="name"]').value.trim();
         const description = form.querySelector('[name="description"]').value.trim();
@@ -172,16 +205,18 @@ function renderCreateProject(contractNumber, customerDomain) {
         }
     }},
         h("label", { htmlFor: "name" }, "Project name"),
-        h("div", { style: "display:flex;align-items:center;gap:0.25rem;margin-bottom:0.75rem" },
-            h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project", style: "margin-bottom:0;flex:1" }),
-            customerDomain ? h("span", { className: "meta", style: "white-space:nowrap" }, "." + customerDomain) : null,
+        h("div", { className: "input-with-suffix" },
+            h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project" }),
+            customerDomain ? h("span", { className: "input-suffix" }, "." + customerDomain) : null,
         ),
         h("label", { htmlFor: "description" }, "Description"),
         h("input", { name: "description", placeholder: "Optional description" }),
         h("label", { htmlFor: "users" }, "Users (one email per line)"),
         h("textarea", { name: "users", placeholder: "user1@example.se\nuser2@example.se" }),
-        h("button", { type: "submit", className: "btn btn-primary" }, "Create Project"),
-        h("button", { type: "button", className: "btn", style: "margin-left:0.5rem;background:#6c757d", onclick: () => renderContractProjects(contractNumber) }, "Cancel"),
+        h("div", { className: "btn-row" },
+            h("button", { type: "button", className: "btn btn-secondary btn-small", onclick: () => renderContractProjects(contractNumber) }, "Cancel"),
+            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Create Project"),
+        ),
     );
     app.appendChild(form);
 }
@@ -190,7 +225,12 @@ function renderCreateProject(contractNumber, customerDomain) {
 
 async function renderAdminCustomers() {
     clear(app);
-    app.appendChild(h("h2", {}, "Admin — Customers"));
+    app.appendChild(breadcrumbs(
+        { label: "Admin" },
+        { label: "Customers" },
+    ));
+    app.appendChild(h("h2", {}, "Customers"));
+    app.appendChild(h("p", { className: "page-desc" }, "Manage customer organisations and their contracts."));
 
     const form = h("form", { onsubmit: async (e) => {
         e.preventDefault();
@@ -205,7 +245,7 @@ async function renderAdminCustomers() {
             renderAdminCustomers();
         } catch (err) { showAlert(err.message); }
     }},
-        h("div", { className: "card" },
+        h("div", { className: "form-card" },
             h("h3", {}, "Add Customer"),
             h("div", { className: "form-row" },
                 h("div", {},
@@ -217,14 +257,14 @@ async function renderAdminCustomers() {
                     h("input", { name: "domain", required: "true", placeholder: "example.se", pattern: "[a-z0-9.-]+" }),
                 ),
             ),
-            h("div", { style: "margin-top:0.25rem" },
-                h("label", {}, "Description"),
-                h("input", { name: "description", placeholder: "Optional" }),
-            ),
-            h("button", { type: "submit", className: "btn btn-primary btn-small", style: "margin-top:0.5rem" }, "Add"),
+            h("label", {}, "Description"),
+            h("input", { name: "description", placeholder: "Optional" }),
+            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Customer"),
         ),
     );
     app.appendChild(form);
+
+    app.appendChild(h("div", { className: "section-label" }, "Existing Customers"));
 
     try {
         const customers = await api("/api/admin/customers");
@@ -233,15 +273,15 @@ async function renderAdminCustomers() {
             return;
         }
         for (const c of customers) {
-            const card = h("div", { className: "card", onclick: () => renderAdminCustomerDetail(c.id) },
-                h("div", { className: "card-header" },
-                    h("h3", {}, c.name),
-                    h("span", { className: "badge badge-contract" }, c.domain),
-                ),
-                c.description ? h("p", { className: "meta" }, c.description) : null,
+            app.appendChild(
+                h("div", { className: "card card-clickable", onclick: () => renderAdminCustomerDetail(c.id) },
+                    h("div", { className: "card-header" },
+                        h("h3", {}, c.name),
+                        h("span", { className: "badge badge-neutral" }, c.domain),
+                    ),
+                    c.description ? h("p", { className: "meta" }, c.description) : null,
+                )
             );
-            card.style.cursor = "pointer";
-            app.appendChild(card);
         }
     } catch (e) { showAlert(e.message); }
 }
@@ -252,12 +292,19 @@ async function renderAdminCustomerDetail(customerId) {
     clear(app);
     try {
         const customer = await api(`/api/admin/customers/${customerId}`);
+
+        app.appendChild(breadcrumbs(
+            { label: "Admin" },
+            { label: "Customers", onclick: renderAdminCustomers },
+            { label: customer.name },
+        ));
         app.appendChild(h("h2", {}, customer.name));
-        if (customer.description) app.appendChild(h("p", { className: "meta" }, customer.description));
+        app.appendChild(h("p", { className: "page-desc" },
+            customer.domain + (customer.description ? " — " + customer.description : ""),
+        ));
 
-        app.appendChild(h("h3", { style: "margin-top:1.5rem" }, "Contracts"));
+        app.appendChild(h("div", { className: "section-label" }, "Add Contract"));
 
-        // Add contract form
         const form = h("form", { onsubmit: async (e) => {
             e.preventDefault();
             const cn = form.querySelector('[name="contract_number"]').value.trim();
@@ -270,10 +317,10 @@ async function renderAdminCustomerDetail(customerId) {
                 renderAdminCustomerDetail(customerId);
             } catch (err) { showAlert(err.message); }
         }},
-            h("div", { className: "card" },
+            h("div", { className: "form-card" },
                 h("div", { className: "form-row" },
                     h("div", {},
-                        h("label", {}, "Contract number"),
+                        h("label", {}, "Contract Number"),
                         h("input", { name: "contract_number", required: "true", placeholder: "SD-123-a", pattern: "[A-Za-z0-9-]+" }),
                     ),
                     h("div", {},
@@ -286,35 +333,45 @@ async function renderAdminCustomerDetail(customerId) {
         );
         app.appendChild(form);
 
-        for (const c of customer.contracts) {
-            const card = h("div", { className: "card", onclick: () => renderAdminContractDetail(c.id) },
-                h("div", { className: "card-header" },
-                    h("h3", {}, c.contract_number),
-                    h("span", { className: "badge badge-contract" }, customer.name),
-                ),
-                c.description ? h("p", { className: "meta" }, c.description) : null,
-            );
-            card.style.cursor = "pointer";
-            app.appendChild(card);
-        }
+        app.appendChild(h("div", { className: "section-label" }, "Contracts"));
+
         if (!customer.contracts.length) {
             app.appendChild(h("p", { className: "empty" }, "No contracts yet."));
+        }
+        for (const c of customer.contracts) {
+            app.appendChild(
+                h("div", { className: "card card-clickable", onclick: () => renderAdminContractDetail(c.id, customerId) },
+                    h("div", { className: "card-header" },
+                        h("h3", {}, c.contract_number),
+                    ),
+                    c.description ? h("p", { className: "meta" }, c.description) : null,
+                )
+            );
         }
     } catch (e) { showAlert(e.message); }
 }
 
 // --- Admin views: Contract detail (manage users) ---
 
-async function renderAdminContractDetail(contractId) {
+async function renderAdminContractDetail(contractId, customerId) {
     clear(app);
     try {
         const contract = await api(`/api/admin/contracts/${contractId}`);
-        app.appendChild(h("h2", {}, contract.customer.name + " — " + contract.contract_number));
-        if (contract.description) app.appendChild(h("p", { className: "meta" }, contract.description));
 
-        app.appendChild(h("h3", { style: "margin-top:1.5rem" }, "Authorized Users"));
+        app.appendChild(breadcrumbs(
+            { label: "Admin" },
+            { label: "Customers", onclick: renderAdminCustomers },
+            { label: contract.customer.name, onclick: () => renderAdminCustomerDetail(contract.customer.id) },
+            { label: contract.contract_number },
+        ));
+        app.appendChild(h("h2", {}, contract.contract_number));
+        app.appendChild(h("p", { className: "page-desc" },
+            contract.customer.name + " (" + contract.customer.domain + ")" +
+            (contract.description ? " — " + contract.description : ""),
+        ));
 
-        // Add user form
+        app.appendChild(h("div", { className: "section-label" }, "Grant Access"));
+
         const form = h("form", { onsubmit: async (e) => {
             e.preventDefault();
             const sub = form.querySelector('[name="user_sub"]').value.trim();
@@ -323,16 +380,16 @@ async function renderAdminContractDetail(contractId) {
                     method: "POST",
                     body: JSON.stringify({ user_sub: sub }),
                 });
-                renderAdminContractDetail(contractId);
+                renderAdminContractDetail(contractId, customerId);
             } catch (err) { showAlert(err.message); }
         }},
-            h("div", { className: "card" },
+            h("div", { className: "form-card" },
                 h("div", { className: "form-row" },
                     h("div", {},
                         h("label", {}, "User (OIDC sub / email)"),
                         h("input", { name: "user_sub", required: "true", placeholder: "user@example.se" }),
                     ),
-                    h("div", { style: "display:flex;align-items:flex-end" },
+                    h("div", { style: "display:flex;align-items:flex-end;padding-bottom:12px" },
                         h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Grant Access"),
                     ),
                 ),
@@ -340,20 +397,22 @@ async function renderAdminContractDetail(contractId) {
         );
         app.appendChild(form);
 
+        app.appendChild(h("div", { className: "section-label" }, "Authorized Users"));
+
         if (!contract.users.length) {
             app.appendChild(h("p", { className: "empty" }, "No users have access yet."));
         } else {
-            const ul = h("ul", { className: "user-list card" });
+            const ul = h("ul", { className: "user-list" });
             for (const userSub of contract.users) {
                 ul.appendChild(h("li", {},
-                    h("span", {}, userSub),
+                    h("span", { className: "user-email" }, userSub),
                     h("button", {
-                        className: "btn btn-danger btn-small",
+                        className: "btn btn-danger",
                         onclick: async (e) => {
                             e.stopPropagation();
                             if (confirm(`Revoke access for ${userSub}?`)) {
                                 await api(`/api/admin/contracts/${contractId}/users/${encodeURIComponent(userSub)}`, { method: "DELETE" });
-                                renderAdminContractDetail(contractId);
+                                renderAdminContractDetail(contractId, customerId);
                             }
                         },
                     }, "Revoke"),
