@@ -53,6 +53,8 @@ async function route() {
         return renderBillingJobs();
 
     // Admin routes
+    if (parts[0] === "admin" && parts[1] === "pricing" && parts[2] === "docs")
+        return renderPricingDocs();
     if (parts[0] === "admin" && parts[1] === "billing")
         return renderAdminBillingJobs();
     if (parts[0] === "admin" && parts[1] === "pricing")
@@ -536,7 +538,10 @@ async function renderAdminContractDetail(contractId) {
         app.appendChild(rebateForm);
 
         // Price overrides
-        app.appendChild(h("div", { className: "section-label" }, "Price Overrides"));
+        app.appendChild(h("div", { className: "section-label" },
+            "Price Overrides ",
+            h("a", { href: "#/admin/pricing/docs", className: "help-link", style: "text-transform:none;letter-spacing:normal;font-weight:normal" }, "(how does pricing work?)"),
+        ));
         try {
             const overrides = await api(`/api/admin/contracts/${contractId}/pricing`);
             if (overrides.length) {
@@ -666,7 +671,10 @@ async function renderAdminPricing() {
     clear(app);
     app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Pricing" }));
     app.appendChild(h("h2", {}, "Global Pricing"));
-    app.appendChild(h("p", { className: "page-desc" }, "Set default prices per resource type. Prices can be set per metadata value (e.g. per flavor). Contracts can override these individually."));
+    app.appendChild(h("p", { className: "page-desc" },
+        "Set default prices per resource type. Prices can be set per metadata value (e.g. per flavor). Contracts can override these individually. ",
+        h("a", { href: "#/admin/pricing/docs", className: "help-link" }, "How does pricing work?"),
+    ));
 
     try {
         const prices = await api("/api/admin/pricing");
@@ -771,6 +779,108 @@ async function renderAdminPricing() {
     if (!metrics.length) {
         app.appendChild(h("p", { className: "meta" }, "Could not connect to Gnocchi to discover available metrics. You can enter metric types manually."));
     }
+}
+
+// --- Pricing Documentation ---
+
+function renderPricingDocs() {
+    clear(app);
+    app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Pricing", hash: "admin/pricing" }, { label: "Documentation" }));
+    app.appendChild(h("h2", {}, "How Pricing Works"));
+
+    const doc = h("div", { className: "doc" });
+    doc.innerHTML = `
+        <h3>Overview</h3>
+        <p>The billing system queries <strong>Gnocchi</strong> (the metrics database) for resource usage data,
+        then applies the prices you configure here to calculate costs for each contract.</p>
+
+        <p>The pipeline is: <code>Ceilometer</code> (collects metrics) &rarr; <code>Gnocchi</code> (stores time-series data)
+        &rarr; <code>Portal billing</code> (queries usage, applies prices, generates CSV).</p>
+
+        <h3>How metering works</h3>
+        <p>Ceilometer polls OpenStack services at a fixed interval and stores measurements in Gnocchi.
+        Each measurement is a <strong>data point</strong> — one sample taken at one point in time.</p>
+
+        <p>The current <strong>collection interval is 10 minutes</strong> (600 seconds).
+        This means a resource running for a full month produces approximately <strong>4,320 data points</strong>
+        (6 per hour &times; 24 hours &times; 30 days).</p>
+
+        <h3>Resource types and metrics</h3>
+        <p>When you add a price, you select a <strong>resource type</strong> from the dropdown. These are the metrics
+        that Gnocchi is collecting:</p>
+
+        <table>
+            <tr><th>Metric</th><th>What it measures</th><th>Gnocchi unit</th></tr>
+            <tr><td>instance</td><td>Virtual machine existence (1 = running, 0 = stopped)</td><td>instance</td></tr>
+            <tr><td>volume.size</td><td>Block storage volume size</td><td>GB</td></tr>
+            <tr><td>image.size</td><td>Glance image size</td><td>MB</td></tr>
+            <tr><td>ip.floating</td><td>Floating IP allocation</td><td>ip</td></tr>
+            <tr><td>radosgw.objects.size</td><td>S3/object storage usage</td><td>GB</td></tr>
+            <tr><td>network.incoming.bytes.rate</td><td>Inbound network traffic rate</td><td>MB</td></tr>
+            <tr><td>network.outgoing.bytes.rate</td><td>Outbound network traffic rate</td><td>MB</td></tr>
+        </table>
+
+        <h3>Metadata-based pricing</h3>
+        <p>Some metrics have <strong>metadata fields</strong> that allow more granular pricing. For example,
+        the <code>instance</code> metric includes <code>flavor_name</code>, so you can set different prices
+        for different VM sizes.</p>
+
+        <p>When billing, the system matches prices in this order:</p>
+        <ol style="margin:0 0 12px 20px">
+            <li><strong>Specific price</strong> — matches both the metric type AND the metadata value (e.g. instance where flavor_name = b2.c4r8)</li>
+            <li><strong>Base price</strong> — matches just the metric type (e.g. instance with no metadata filter, used as fallback)</li>
+        </ol>
+
+        <p>This means you can set a base price for all instances, then override specific flavors that should cost more or less.</p>
+
+        <h3>The conversion factor</h3>
+        <p>Gnocchi stores raw data points — the billing system needs to convert these into the units you want to charge for.
+        The <strong>conversion factor</strong> is multiplied with the raw data point count to produce the billing quantity.</p>
+
+        <p>Since the collection interval is <strong>10 minutes</strong>, each data point represents 10 minutes of usage.
+        To convert to hours, use a conversion factor of <code>1/6 = 0.166667</code>.</p>
+
+        <div class="example">
+            <p><strong>Example: Pricing an instance flavor at 1,095 SEK/month</strong></p>
+            <p>1. Monthly price: 1,095 SEK</p>
+            <p>2. Hourly price: 1,095 / 730 hours = <strong>1.50 SEK/hour</strong></p>
+            <p>3. Set: resource type = <code>instance</code>, flavor_name = <code>b2.c4r8</code></p>
+            <p>4. Unit price = <code>1.50</code> SEK</p>
+            <p>5. Conversion factor = <code>0.166667</code> (10-min data points &rarr; hours)</p>
+        </div>
+
+        <div class="example">
+            <p><strong>Example: Pricing block storage at 1.73 SEK/GB/month</strong></p>
+            <p>1. Gnocchi reports volume.size in GB (one data point per 10-min interval)</p>
+            <p>2. For monthly billing, we want the average GB over the month</p>
+            <p>3. With ~4,320 data points per month, conversion factor = <code>1/4320 = 0.000231</code></p>
+            <p>4. But since each data point already represents the GB value, and we want GB-months:</p>
+            <p>5. Set conversion factor = <code>0.000231</code>, unit price = <code>1.73</code> SEK</p>
+            <p>6. A 100 GB volume running all month: 4,320 &times; 0.000231 &times; 100 &times; 1.73 = ~173 SEK</p>
+        </div>
+
+        <h3>Contract overrides and rebates</h3>
+        <p><strong>Price overrides</strong> let you set a different unit price for a specific contract, overriding the global default.
+        This is useful for customers with negotiated rates.</p>
+
+        <p><strong>Rebates</strong> are a percentage discount applied after the price calculation.
+        A 10% rebate on a 1,000 SEK charge results in 900 SEK.</p>
+
+        <p>The calculation order is: <code>quantity &times; conversion_factor &times; unit_price &times; (1 - rebate%/100)</code></p>
+
+        <h3>Common conversion factors</h3>
+        <table>
+            <tr><th>From</th><th>To</th><th>Factor</th></tr>
+            <tr><td>10-min data points</td><td>Hours</td><td>0.166667</td></tr>
+            <tr><td>10-min data points</td><td>Months (avg 730h)</td><td>0.000231</td></tr>
+            <tr><td>Raw value (e.g. GB)</td><td>Same unit</td><td>1</td></tr>
+        </table>
+    `;
+    app.appendChild(doc);
+
+    app.appendChild(h("div", { style: "margin-top:24px" },
+        h("a", { href: "#/admin/pricing", className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Back to Pricing"),
+    ));
 }
 
 // ========== BILLING VIEWS ==========
