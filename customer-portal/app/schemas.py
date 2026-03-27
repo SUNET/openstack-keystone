@@ -10,12 +10,14 @@ from pydantic import BaseModel, Field
 
 class CreateCustomerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    domain: str = Field(min_length=1, max_length=255, pattern=r"^[a-z0-9.-]+$")
     description: str = ""
 
 
 class CustomerResponse(BaseModel):
     id: int
     name: str
+    domain: str
     description: str
     created_at: datetime
 

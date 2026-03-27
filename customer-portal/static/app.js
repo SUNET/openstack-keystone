@@ -116,8 +116,13 @@ async function renderContracts() {
 async function renderContractProjects(contractNumber) {
     clear(app);
     app.appendChild(h("h2", {}, "Projects — " + contractNumber));
+
+    // Find the customer domain for this contract
+    const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
+    const customerDomain = contractInfo ? contractInfo.customer.domain : "";
+
     app.appendChild(
-        h("button", { className: "btn btn-primary", style: "margin-bottom:1rem", onclick: () => renderCreateProject(contractNumber) }, "+ New Project")
+        h("button", { className: "btn btn-primary", style: "margin-bottom:1rem", onclick: () => renderCreateProject(contractNumber, customerDomain) }, "+ New Project")
     );
 
     try {
@@ -145,7 +150,7 @@ async function renderContractProjects(contractNumber) {
 
 // --- Customer views: Create project ---
 
-function renderCreateProject(contractNumber) {
+function renderCreateProject(contractNumber, customerDomain) {
     clear(app);
     app.appendChild(h("h2", {}, "Create Project under " + contractNumber));
 
@@ -167,7 +172,10 @@ function renderCreateProject(contractNumber) {
         }
     }},
         h("label", { htmlFor: "name" }, "Project name"),
-        h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project" }),
+        h("div", { style: "display:flex;align-items:center;gap:0.25rem;margin-bottom:0.75rem" },
+            h("input", { name: "name", required: "true", maxlength: "64", placeholder: "my-project", style: "margin-bottom:0;flex:1" }),
+            customerDomain ? h("span", { className: "meta", style: "white-space:nowrap" }, "." + customerDomain) : null,
+        ),
         h("label", { htmlFor: "description" }, "Description"),
         h("input", { name: "description", placeholder: "Optional description" }),
         h("label", { htmlFor: "users" }, "Users (one email per line)"),
@@ -187,11 +195,12 @@ async function renderAdminCustomers() {
     const form = h("form", { onsubmit: async (e) => {
         e.preventDefault();
         const name = form.querySelector('[name="name"]').value.trim();
+        const domain = form.querySelector('[name="domain"]').value.trim();
         const description = form.querySelector('[name="description"]').value.trim();
         try {
             await api("/api/admin/customers", {
                 method: "POST",
-                body: JSON.stringify({ name, description }),
+                body: JSON.stringify({ name, domain, description }),
             });
             renderAdminCustomers();
         } catch (err) { showAlert(err.message); }
@@ -204,11 +213,15 @@ async function renderAdminCustomers() {
                     h("input", { name: "name", required: "true", placeholder: "Organisation name" }),
                 ),
                 h("div", {},
-                    h("label", {}, "Description"),
-                    h("input", { name: "description", placeholder: "Optional" }),
+                    h("label", {}, "Domain"),
+                    h("input", { name: "domain", required: "true", placeholder: "example.se", pattern: "[a-z0-9.-]+" }),
                 ),
             ),
-            h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add"),
+            h("div", { style: "margin-top:0.25rem" },
+                h("label", {}, "Description"),
+                h("input", { name: "description", placeholder: "Optional" }),
+            ),
+            h("button", { type: "submit", className: "btn btn-primary btn-small", style: "margin-top:0.5rem" }, "Add"),
         ),
     );
     app.appendChild(form);
@@ -221,7 +234,10 @@ async function renderAdminCustomers() {
         }
         for (const c of customers) {
             const card = h("div", { className: "card", onclick: () => renderAdminCustomerDetail(c.id) },
-                h("h3", {}, c.name),
+                h("div", { className: "card-header" },
+                    h("h3", {}, c.name),
+                    h("span", { className: "badge badge-contract" }, c.domain),
+                ),
                 c.description ? h("p", { className: "meta" }, c.description) : null,
             );
             card.style.cursor = "pointer";

@@ -43,7 +43,7 @@ async def create_customer(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Customer already exists")
 
-    customer = Customer(name=req.name, description=req.description)
+    customer = Customer(name=req.name, domain=req.domain, description=req.description)
     session.add(customer)
     await session.commit()
     await session.refresh(customer)

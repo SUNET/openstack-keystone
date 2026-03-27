@@ -7,11 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.orm import selectinload
+
 from app.auth import get_current_user, get_user_contracts
 from app.db import get_session
 from app.git_backend import GitBackend, _sanitize_name
 from app.k8s import get_project_status
-from app.models import Contract, ContractAccess
+from app.models import Contract, ContractAccess, Customer
 from app.schemas import CreateProjectRequest, ProjectResponse
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,7 @@ router = APIRouter(prefix="/api/contracts", tags=["projects"])
 async def _require_contract_access(
     contract_number: str, user_sub: str, session: AsyncSession
 ) -> Contract:
-    """Verify user has access to the contract. Returns the contract."""
+    """Verify user has access to the contract. Returns the contract with customer loaded."""
     result = await session.execute(
         select(Contract)
         .join(ContractAccess)
@@ -30,6 +32,7 @@ async def _require_contract_access(
             Contract.contract_number == contract_number,
             ContractAccess.user_sub == user_sub,
         )
+        .options(selectinload(Contract.customer))
     )
     contract = result.scalar_one_or_none()
     if not contract:
@@ -74,7 +77,10 @@ async def create_project(
     user: dict[str, Any] = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    await _require_contract_access(contract_number, user["sub"], session)
+    contract = await _require_contract_access(contract_number, user["sub"], session)
+
+    # Qualify project name with customer domain (e.g. "my-project" -> "my-project.sunet.se")
+    qualified_name = f"{req.name}.{contract.customer.domain}"
 
     # Ensure the creating user is in the users list
     users = list(set(req.users + [user["sub"]]))
@@ -83,7 +89,7 @@ async def create_project(
     try:
         git_backend.write_project(
             contract_number=contract_number,
-            project_name=req.name,
+            project_name=qualified_name,
             description=req.description,
             users=users,
         )
@@ -91,7 +97,7 @@ async def create_project(
         raise HTTPException(status_code=409, detail=str(e))
 
     return ProjectResponse(
-        name=req.name,
+        name=qualified_name,
         description=req.description,
         contract_number=contract_number,
         users=users,
