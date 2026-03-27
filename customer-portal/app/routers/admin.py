@@ -313,15 +313,15 @@ async def revoke_access(
 
 
 @router.get("/pricing/metrics")
-async def list_cloudkitty_metrics(
+async def list_available_metrics(
     _user=Depends(require_admin),
 ):
-    """Discover available metric types from CloudKitty."""
-    from app.billing_runner import discover_cloudkitty_metrics
+    """Discover available metric types and metadata values from Gnocchi."""
+    from app.billing_runner import discover_gnocchi_metrics
     from app.config import get_settings
 
     settings = get_settings()
-    metrics = await asyncio.to_thread(discover_cloudkitty_metrics, settings.openstack_cloud)
+    metrics = await asyncio.to_thread(discover_gnocchi_metrics, settings.openstack_cloud)
     return metrics
 
 

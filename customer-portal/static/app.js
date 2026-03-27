@@ -666,17 +666,23 @@ async function renderAdminPricing() {
     clear(app);
     app.appendChild(breadcrumbs({ label: "Admin" }, { label: "Pricing" }));
     app.appendChild(h("h2", {}, "Global Pricing"));
-    app.appendChild(h("p", { className: "page-desc" }, "Set default prices per resource type. Contracts can override these individually."));
+    app.appendChild(h("p", { className: "page-desc" }, "Set default prices per resource type. Prices can be set per metadata value (e.g. per flavor). Contracts can override these individually."));
 
     try {
         const prices = await api("/api/admin/pricing");
         if (prices.length) {
             const ul = h("ul", { className: "user-list" });
             for (const p of prices) {
+                let label = p.resource_type;
+                if (p.metadata_field && p.metadata_value)
+                    label += ` [${p.metadata_field}=${p.metadata_value}]`;
+                label += `: ${p.unit_price} SEK / ${p.unit}`;
+                if (p.conversion_factor != 1) label += ` (factor: ${p.conversion_factor})`;
+
                 ul.appendChild(h("li", {},
-                    h("span", { className: "user-sub" }, `${p.resource_type}: ${p.unit_price} SEK / ${p.unit}` + (p.conversion_factor != 1 ? ` (factor: ${p.conversion_factor})` : "")),
+                    h("span", { className: "user-sub" }, label),
                     h("button", { className: "btn btn-danger", onclick: async () => {
-                        await api(`/api/admin/pricing/${encodeURIComponent(p.resource_type)}`, { method: "DELETE" });
+                        await api(`/api/admin/pricing/${p.id}`, { method: "DELETE" });
                         navigate("/admin/pricing");
                     }}, "Remove"),
                 ));
@@ -689,32 +695,62 @@ async function renderAdminPricing() {
 
     app.appendChild(h("div", { className: "section-label" }, "Add Price"));
 
-    // Fetch available metrics from CloudKitty
+    // Fetch available metrics from Gnocchi
     let metrics = [];
     try { metrics = await api("/api/admin/pricing/metrics"); } catch (e) { /* ignore */ }
 
-    // Build a map of metric_type -> unit from CloudKitty
     const metricUnits = {};
-    for (const m of metrics) metricUnits[m.metric_type] = m.unit || "";
+    const metricMeta = {};
+    for (const m of metrics) {
+        metricUnits[m.metric_type] = m.unit || "";
+        metricMeta[m.metric_type] = m.metadata_fields || [];
+    }
+
+    // Metadata field/value dropdowns (shown when a metric with metadata is selected)
+    const metaFieldContainer = h("div", { id: "meta-fields", style: "display:none" });
 
     const metricSelect = metrics.length
-        ? h("select", { name: "resource_type", required: "true" },
+        ? h("select", { name: "resource_type", required: "true", onchange: (e) => {
+            const rt = e.target.value;
+            const fields = metricMeta[rt] || [];
+            clear(metaFieldContainer);
+            if (fields.length && fields[0].values.length) {
+                const field = fields[0]; // primary metadata field (e.g. flavor_name)
+                metaFieldContainer.style.display = "block";
+                metaFieldContainer.appendChild(h("input", { type: "hidden", name: "metadata_field", value: field.field }));
+                metaFieldContainer.appendChild(h("label", {}, `${field.field} (optional — leave blank for base price)`));
+                metaFieldContainer.appendChild(
+                    h("select", { name: "metadata_value" },
+                        h("option", { value: "" }, "-- All (base price) --"),
+                        ...field.values.map(v => h("option", { value: v }, v)),
+                    )
+                );
+            } else {
+                metaFieldContainer.style.display = "none";
+            }
+          }},
             h("option", { value: "" }, "-- Select metric --"),
             ...metrics.map(m => h("option", { value: m.metric_type }, `${m.metric_type} (${m.unit})`)),
           )
-        : h("input", { name: "resource_type", required: "true", placeholder: "metric type (CloudKitty unavailable)" });
+        : h("input", { name: "resource_type", required: "true", placeholder: "metric type (Gnocchi unavailable)" });
 
     const form = h("form", { className: "form-card", onsubmit: async (e) => {
         e.preventDefault();
         const rt = form.querySelector('[name="resource_type"]').value.trim();
         const price = form.querySelector('[name="unit_price"]').value.trim();
         const factor = form.querySelector('[name="conversion_factor"]').value.trim();
-        const unit = metricUnits[rt] || rt;
+        const unit = metricUnits[rt] || "units";
+        const metaField = form.querySelector('[name="metadata_field"]');
+        const metaValue = form.querySelector('[name="metadata_value"]');
         if (!rt) return;
+
+        const body = { resource_type: rt, unit_price: parseFloat(price), unit, conversion_factor: parseFloat(factor) };
+        if (metaField && metaValue && metaValue.value) {
+            body.metadata_field = metaField.value;
+            body.metadata_value = metaValue.value;
+        }
         try {
-            await api(`/api/admin/pricing/${encodeURIComponent(rt)}`, {
-                method: "PUT", body: JSON.stringify({ resource_type: rt, unit_price: parseFloat(price), unit, conversion_factor: parseFloat(factor) }),
-            });
+            await api("/api/admin/pricing", { method: "POST", body: JSON.stringify(body) });
             navigate("/admin/pricing");
         } catch (err) { showAlert(err.message); }
     }},
@@ -722,17 +758,18 @@ async function renderAdminPricing() {
             h("div", {}, h("label", {}, "Resource type"), metricSelect),
             h("div", {}, h("label", {}, "Unit price (SEK)"), h("input", { name: "unit_price", type: "number", min: "0", step: "0.01", required: "true", placeholder: "0.00" })),
         ),
+        metaFieldContainer,
         h("label", {}, "Conversion factor"),
-        h("input", { name: "conversion_factor", type: "number", min: "0", step: "0.000001", required: "true", value: "1", placeholder: "1" }),
+        h("input", { name: "conversion_factor", type: "number", min: "0", step: "0.000001", required: "true", value: "0.166667", placeholder: "0.166667" }),
         h("p", { className: "meta", style: "margin-top:-8px;margin-bottom:12px" },
-            "Multiplied with raw CloudKitty quantity. E.g. 0.166667 converts 10-min data points to hours."
+            "Multiplied with raw Gnocchi data points. 0.166667 converts 10-min intervals to hours."
         ),
-        h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Set Price"),
+        h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Add Price"),
     );
     app.appendChild(form);
 
     if (!metrics.length) {
-        app.appendChild(h("p", { className: "meta" }, "Could not connect to CloudKitty to discover available metrics. You can enter metric types manually."));
+        app.appendChild(h("p", { className: "meta" }, "Could not connect to Gnocchi to discover available metrics. You can enter metric types manually."));
     }
 }
 

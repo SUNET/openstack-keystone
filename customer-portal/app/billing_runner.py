@@ -35,34 +35,66 @@ logger = logging.getLogger(__name__)
 CONTRACT_TAG_PREFIX = "contract:"
 
 
-def discover_cloudkitty_metrics(cloud_name: str = "openstack") -> list[dict]:
-    """Query CloudKitty to discover available metric types and their units.
+def discover_gnocchi_metrics(cloud_name: str = "openstack") -> list[dict]:
+    """Discover available metric/resource types and their metadata values from Gnocchi.
 
-    Uses the /v1/info/metrics endpoint which returns the configured
-    processor metrics with their IDs, units, and metadata fields.
+    Returns a list of dicts:
+      {metric_type, resource_type, unit, metadata_fields: [{field, values: []}]}
     """
+    import httpx
+    gnocchi = "http://gnocchi-api.openstack.svc.cluster.local:8041"
+
     try:
         conn = openstack.connect(cloud=cloud_name)
-        import httpx
         token = conn.auth_token
-        endpoint = conn.rating.get_endpoint().rstrip("/")
-        # Use /v1/info/metrics — works regardless of which API version the SDK discovered
-        base = endpoint.rsplit("/v", 1)[0]
-        resp = httpx.get(f"{base}/v1/info/metrics", headers={"X-Auth-Token": token})
-        if resp.status_code != 200:
-            logger.warning("CloudKitty /v1/info/metrics returned %d", resp.status_code)
-            return []
 
-        metrics = []
-        for m in resp.json().get("metrics", []):
-            metrics.append({
-                "metric_type": m.get("metric_id", ""),
-                "unit": m.get("unit", ""),
-            })
+        # Known metric -> resource type mappings (from ceilometer config)
+        METRIC_RESOURCE_MAP = {
+            "instance": {"resource_type": "instance", "unit": "hours", "metadata": ["flavor_name"]},
+            "volume.size": {"resource_type": "volume", "unit": "GB", "metadata": ["volume_type"]},
+            "image.size": {"resource_type": "image", "unit": "MB", "metadata": ["disk_format"]},
+            "ip.floating": {"resource_type": "network", "unit": "hours", "metadata": []},
+            "radosgw.objects.size": {"resource_type": "ceph_account", "unit": "GB", "metadata": []},
+            "network.incoming.bytes.rate": {"resource_type": "instance_network_interface", "unit": "MB", "metadata": []},
+            "network.outgoing.bytes.rate": {"resource_type": "instance_network_interface", "unit": "MB", "metadata": []},
+        }
 
-        return sorted(metrics, key=lambda m: m["metric_type"])
+        results = []
+        for metric_type, info in METRIC_RESOURCE_MAP.items():
+            entry = {
+                "metric_type": metric_type,
+                "resource_type": info["resource_type"],
+                "unit": info["unit"],
+                "metadata_fields": [],
+            }
+
+            # For each metadata field, query Gnocchi for distinct values
+            for field in info["metadata"]:
+                values = set()
+                try:
+                    resp = httpx.get(
+                        f"{gnocchi}/v1/resource/{info['resource_type']}",
+                        headers={"X-Auth-Token": token},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        for resource in resp.json():
+                            val = resource.get(field)
+                            if val:
+                                values.add(val)
+                except Exception:
+                    logger.warning("Failed to query Gnocchi for %s metadata", info["resource_type"])
+
+                entry["metadata_fields"].append({
+                    "field": field,
+                    "values": sorted(values),
+                })
+
+            results.append(entry)
+
+        return results
     except Exception:
-        logger.exception("Failed to discover CloudKitty metrics")
+        logger.exception("Failed to discover Gnocchi metrics")
         return []
 
 
