@@ -1,10 +1,61 @@
-/* SUNET Cloud Portal — vanilla JS SPA */
+/* SUNET Cloud Portal — vanilla JS SPA with hash routing */
 
 const $ = (sel) => document.querySelector(sel);
 const app = $("#app");
 const nav = $("#nav");
 
 let currentUser = null;
+
+// --- Router ---
+
+function navigate(hash) {
+    location.hash = hash;
+}
+
+function currentRoute() {
+    return location.hash.replace(/^#\/?/, "");
+}
+
+async function route() {
+    if (!currentUser) {
+        try {
+            currentUser = await api("/api/me");
+            renderNav();
+        } catch {
+            renderLogin();
+            return;
+        }
+    }
+
+    const path = currentRoute();
+    const parts = path.split("/").filter(Boolean);
+
+    // Customer routes
+    if (parts[0] === "contracts" && parts[2] === "projects" && parts[3] === "new") {
+        return renderCreateProject(decodeURIComponent(parts[1]));
+    }
+    if (parts[0] === "contracts" && parts[2] === "projects") {
+        return renderContractProjects(decodeURIComponent(parts[1]));
+    }
+    if (parts[0] === "contracts" || !path) {
+        return renderContracts();
+    }
+
+    // Admin routes
+    if (parts[0] === "admin" && parts[1] === "contracts" && parts[2]) {
+        return renderAdminContractDetail(parts[2]);
+    }
+    if (parts[0] === "admin" && parts[1] === "customers" && parts[2]) {
+        return renderAdminCustomerDetail(parts[2]);
+    }
+    if (parts[0] === "admin") {
+        return renderAdminCustomers();
+    }
+
+    renderContracts();
+}
+
+window.addEventListener("hashchange", route);
 
 // --- API helpers ---
 
@@ -47,12 +98,11 @@ function h(tag, attrs = {}, ...children) {
 function clear(el) { el.innerHTML = ""; return el; }
 
 function breadcrumbs(...items) {
-    // items: [{label, onclick?}, ...] — last item is current (no link)
     const bc = h("nav", { className: "breadcrumbs" });
     items.forEach((item, i) => {
         if (i > 0) bc.appendChild(h("span", { className: "sep" }, "/"));
-        if (i < items.length - 1 && item.onclick) {
-            bc.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); item.onclick(); } }, item.label));
+        if (i < items.length - 1 && item.hash) {
+            bc.appendChild(h("a", { href: "#/" + item.hash }, item.label));
         } else {
             bc.appendChild(h("span", { className: "current" }, item.label));
         }
@@ -78,9 +128,9 @@ function showAlert(msg, type = "error") {
 function renderNav() {
     clear(nav);
     if (!currentUser) return;
-    nav.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderContracts(); } }, "My Contracts"));
+    nav.appendChild(h("a", { href: "#/contracts" }, "My Contracts"));
     if (currentUser.is_admin) {
-        nav.appendChild(h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderAdminCustomers(); } }, "Admin"));
+        nav.appendChild(h("a", { href: "#/admin" }, "Admin"));
     }
     nav.appendChild(h("a", { href: "#", className: "nav-user" }, currentUser.email || currentUser.sub));
     nav.appendChild(h("a", { href: "/auth/logout", className: "nav-logout" }, "Sign out"));
@@ -116,8 +166,9 @@ async function renderContracts() {
             return;
         }
         for (const c of user.contracts) {
+            const cn = encodeURIComponent(c.contract_number);
             app.appendChild(
-                h("div", { className: "card card-clickable", onclick: () => renderContractProjects(c.contract_number) },
+                h("a", { href: `#/contracts/${cn}/projects`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
                     h("div", { className: "card-header" },
                         h("h3", {}, c.contract_number),
                         h("span", { className: "badge badge-neutral" }, c.customer.domain),
@@ -139,16 +190,17 @@ async function renderContractProjects(contractNumber) {
     const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
     const customerName = contractInfo ? contractInfo.customer.name : "";
     const customerDomain = contractInfo ? contractInfo.customer.domain : "";
+    const cn = encodeURIComponent(contractNumber);
 
     app.appendChild(breadcrumbs(
-        { label: "My Contracts", onclick: renderContracts },
+        { label: "My Contracts", hash: "contracts" },
         { label: contractNumber },
     ));
     app.appendChild(h("h2", {}, "Projects"));
     app.appendChild(h("p", { className: "page-desc" }, customerName + " — " + contractNumber));
 
     app.appendChild(
-        h("button", { className: "btn btn-primary btn-small", style: "margin-bottom:16px", onclick: () => renderCreateProject(contractNumber, customerDomain) }, "+ New Project")
+        h("a", { href: `#/contracts/${cn}/projects/new`, className: "btn btn-primary btn-small", style: "display:inline-block;margin-bottom:16px;text-decoration:none" }, "+ New Project")
     );
 
     try {
@@ -176,12 +228,16 @@ async function renderContractProjects(contractNumber) {
 
 // --- Customer views: Create project ---
 
-function renderCreateProject(contractNumber, customerDomain) {
+function renderCreateProject(contractNumber) {
     clear(app);
 
+    const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
+    const customerDomain = contractInfo ? contractInfo.customer.domain : "";
+    const cn = encodeURIComponent(contractNumber);
+
     app.appendChild(breadcrumbs(
-        { label: "My Contracts", onclick: renderContracts },
-        { label: contractNumber, onclick: () => renderContractProjects(contractNumber) },
+        { label: "My Contracts", hash: "contracts" },
+        { label: contractNumber, hash: `contracts/${cn}/projects` },
         { label: "New Project" },
     ));
     app.appendChild(h("h2", {}, "New Project"));
@@ -199,7 +255,7 @@ function renderCreateProject(contractNumber, customerDomain) {
                 method: "POST",
                 body: JSON.stringify({ name, description, users }),
             });
-            renderContractProjects(contractNumber);
+            navigate(`/contracts/${cn}/projects`);
         } catch (err) {
             showAlert(err.message);
         }
@@ -214,7 +270,7 @@ function renderCreateProject(contractNumber, customerDomain) {
         h("label", { htmlFor: "users" }, "Users (one email per line)"),
         h("textarea", { name: "users", placeholder: "user1@example.se\nuser2@example.se" }),
         h("div", { className: "btn-row" },
-            h("button", { type: "button", className: "btn btn-secondary btn-small", onclick: () => renderContractProjects(contractNumber) }, "Cancel"),
+            h("a", { href: `#/contracts/${cn}/projects`, className: "btn btn-secondary btn-small", style: "text-decoration:none" }, "Cancel"),
             h("button", { type: "submit", className: "btn btn-primary btn-small" }, "Create Project"),
         ),
     );
@@ -242,7 +298,7 @@ async function renderAdminCustomers() {
                 method: "POST",
                 body: JSON.stringify({ name, domain, description }),
             });
-            renderAdminCustomers();
+            navigate("/admin");
         } catch (err) { showAlert(err.message); }
     }},
         h("div", { className: "form-card" },
@@ -274,7 +330,7 @@ async function renderAdminCustomers() {
         }
         for (const c of customers) {
             app.appendChild(
-                h("div", { className: "card card-clickable", onclick: () => renderAdminCustomerDetail(c.id) },
+                h("a", { href: `#/admin/customers/${c.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
                     h("div", { className: "card-header" },
                         h("h3", {}, c.name),
                         h("span", { className: "badge badge-neutral" }, c.domain),
@@ -295,7 +351,7 @@ async function renderAdminCustomerDetail(customerId) {
 
         app.appendChild(breadcrumbs(
             { label: "Admin" },
-            { label: "Customers", onclick: renderAdminCustomers },
+            { label: "Customers", hash: "admin" },
             { label: customer.name },
         ));
         app.appendChild(h("h2", {}, customer.name));
@@ -314,7 +370,7 @@ async function renderAdminCustomerDetail(customerId) {
                     method: "POST",
                     body: JSON.stringify({ customer_id: customerId, contract_number: cn, description: desc }),
                 });
-                renderAdminCustomerDetail(customerId);
+                navigate(`/admin/customers/${customerId}`);
             } catch (err) { showAlert(err.message); }
         }},
             h("div", { className: "form-card" },
@@ -340,7 +396,7 @@ async function renderAdminCustomerDetail(customerId) {
         }
         for (const c of customer.contracts) {
             app.appendChild(
-                h("div", { className: "card card-clickable", onclick: () => renderAdminContractDetail(c.id, customerId) },
+                h("a", { href: `#/admin/contracts/${c.id}`, className: "card card-clickable", style: "display:block;text-decoration:none;color:inherit" },
                     h("div", { className: "card-header" },
                         h("h3", {}, c.contract_number),
                     ),
@@ -353,15 +409,15 @@ async function renderAdminCustomerDetail(customerId) {
 
 // --- Admin views: Contract detail (manage users) ---
 
-async function renderAdminContractDetail(contractId, customerId) {
+async function renderAdminContractDetail(contractId) {
     clear(app);
     try {
         const contract = await api(`/api/admin/contracts/${contractId}`);
 
         app.appendChild(breadcrumbs(
             { label: "Admin" },
-            { label: "Customers", onclick: renderAdminCustomers },
-            { label: contract.customer.name, onclick: () => renderAdminCustomerDetail(contract.customer.id) },
+            { label: "Customers", hash: "admin" },
+            { label: contract.customer.name, hash: `admin/customers/${contract.customer.id}` },
             { label: contract.contract_number },
         ));
         app.appendChild(h("h2", {}, contract.contract_number));
@@ -380,7 +436,7 @@ async function renderAdminContractDetail(contractId, customerId) {
                     method: "POST",
                     body: JSON.stringify({ user_sub: sub }),
                 });
-                renderAdminContractDetail(contractId, customerId);
+                navigate(`/admin/contracts/${contractId}`);
             } catch (err) { showAlert(err.message); }
         }},
             h("div", { className: "form-card" },
@@ -412,7 +468,7 @@ async function renderAdminContractDetail(contractId, customerId) {
                             e.stopPropagation();
                             if (confirm(`Revoke access for ${userSub}?`)) {
                                 await api(`/api/admin/contracts/${contractId}/users/${encodeURIComponent(userSub)}`, { method: "DELETE" });
-                                renderAdminContractDetail(contractId, customerId);
+                                navigate(`/admin/contracts/${contractId}`);
                             }
                         },
                     }, "Revoke"),
@@ -425,14 +481,4 @@ async function renderAdminContractDetail(contractId, customerId) {
 
 // --- Init ---
 
-async function init() {
-    try {
-        currentUser = await api("/api/me");
-        renderNav();
-        renderContracts();
-    } catch {
-        renderLogin();
-    }
-}
-
-init();
+route();
