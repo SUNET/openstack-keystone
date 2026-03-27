@@ -36,26 +36,29 @@ CONTRACT_TAG_PREFIX = "contract:"
 
 
 def discover_cloudkitty_metrics(cloud_name: str = "openstack") -> list[dict]:
-    """Query CloudKitty to discover available metric types.
+    """Query CloudKitty to discover available metric types and their units.
 
-    Returns a list of dicts with 'metric_type' and 'unit' for each
-    metric that CloudKitty is collecting. Uses the /v2/summary endpoint
-    grouped by type to find what actually has data.
+    Uses the /v1/info/metrics endpoint which returns the configured
+    processor metrics with their IDs, units, and metadata fields.
     """
     try:
         conn = openstack.connect(cloud=cloud_name)
-        result = conn.rating.get("/v2/summary", params={"groupby": "type"})
-        if result.status_code != 200:
-            logger.warning("CloudKitty summary query returned %d", result.status_code)
+        import httpx
+        token = conn.auth_token
+        endpoint = conn.rating.get_endpoint().rstrip("/")
+        # Use /v1/info/metrics — works regardless of which API version the SDK discovered
+        base = endpoint.rsplit("/v", 1)[0]
+        resp = httpx.get(f"{base}/v1/info/metrics", headers={"X-Auth-Token": token})
+        if resp.status_code != 200:
+            logger.warning("CloudKitty /v1/info/metrics returned %d", resp.status_code)
             return []
 
         metrics = []
-        seen = set()
-        for entry in result.json().get("results", []):
-            metric_type = entry.get("type", "")
-            if metric_type and metric_type not in seen:
-                seen.add(metric_type)
-                metrics.append({"metric_type": metric_type})
+        for m in resp.json().get("metrics", []):
+            metrics.append({
+                "metric_type": m.get("metric_id", ""),
+                "unit": m.get("unit", ""),
+            })
 
         return sorted(metrics, key=lambda m: m["metric_type"])
     except Exception:
@@ -147,24 +150,30 @@ def _load_contract_ids(sync_session: SyncSession) -> dict[str, int]:
 
 def _query_cloudkitty(conn, begin, end, metric_types: list[str]) -> list[dict]:
     """Query CloudKitty for usage data for the given metric types."""
+    import httpx
+    token = conn.auth_token
+    endpoint = conn.rating.get_endpoint().rstrip("/")
+    base = endpoint.rsplit("/v", 1)[0]
+
     summaries = []
     for metric_name in metric_types:
         try:
-            result = conn.rating.get(
-                "/v2/summary",
+            resp = httpx.get(
+                f"{base}/v1/report/summary",
                 params={
                     "begin": begin.isoformat(),
                     "end": end.isoformat(),
-                    "groupby": "project_id,type",
-                    "filters": f"type:{metric_name}",
+                    "groupby": "project_id",
+                    "service": metric_name,
                 },
+                headers={"X-Auth-Token": token},
             )
-            if result.status_code == 200:
-                for entry in result.json().get("results", []):
+            if resp.status_code == 200:
+                for entry in resp.json().get("summary", []):
                     summaries.append({
-                        "project_id": entry.get("project_id", ""),
-                        "metric": entry.get("type", metric_name),
-                        "quantity": entry.get("qty", 0),
+                        "project_id": entry.get("project_id", entry.get("tenant_id", "")),
+                        "metric": metric_name,
+                        "quantity": entry.get("qty", entry.get("res_qty", 0)),
                     })
         except Exception:
             logger.exception("Failed to query CloudKitty for %s", metric_name)
