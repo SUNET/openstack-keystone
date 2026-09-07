@@ -5,8 +5,9 @@ sync session, then call `_emit_synthetic_cluster_lines` and capture the rows
 written to a fake CSV writer. The expected lines are derived from the plan's
 billing model:
 
-  - cluster_management_fee  500 SEK × (3 + 3·worker_groups) per period
-                            (full month, never prorated)
+   - cluster_management_fee  one configured package fee per period (full
+                             month, never prorated); groups above the largest
+                             package add the configured linear increment
   - cluster_setup_fee:controllers  1000 SEK × 1 in the period the cluster
                                    was provisioned
   - cluster_setup_fee:workers      2000 SEK × initial_worker_groups in the
@@ -22,8 +23,16 @@ from __future__ import annotations
 import io
 import json
 from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
 
-from app.billing_runner import _emit_synthetic_cluster_lines, _load_prices
+import pytest
+
+from app.billing_runner import (
+    _cluster_management_fee,
+    _emit_synthetic_cluster_lines,
+    _load_prices,
+)
 from app.models import (
     ClusterAddon,
     ClusterRequest,
@@ -39,6 +48,54 @@ def _writer():
 
     buf = io.StringIO()
     return buf, csv.writer(buf, delimiter=";")
+
+
+@pytest.mark.parametrize(
+    ("worker_groups", "expected_fee"),
+    [
+        (1, Decimal("5227.40")),
+        (2, Decimal("8133.40")),
+        (3, Decimal("10739.40")),
+        (4, Decimal("13445.40")),
+        (5, Decimal("16251.40")),
+        (6, Decimal("19057.40")),
+        (7, Decimal("21863.40")),
+    ],
+)
+def test_management_fee_selects_package_or_linear_extension(
+    worker_groups: int, expected_fee: Decimal
+):
+    prices = [
+        SimpleNamespace(
+            resource_type="cluster_management_fee",
+            unit_price=fee,
+            unit="cluster-month",
+            metadata_field="worker_groups",
+            metadata_value=str(groups),
+        )
+        for groups, fee in [
+            (1, Decimal("5227.40")),
+            (2, Decimal("8133.40")),
+            (3, Decimal("10739.40")),
+            (4, Decimal("13445.40")),
+            (5, Decimal("16251.40")),
+            (6, Decimal("19057.40")),
+        ]
+    ]
+    prices.append(
+        SimpleNamespace(
+            resource_type="cluster_management_fee_increment",
+            unit_price=Decimal("2806.00"),
+            unit="worker-group",
+            metadata_field=None,
+            metadata_value=None,
+        )
+    )
+
+    fee, unit = _cluster_management_fee(prices, worker_groups)
+
+    assert fee == expected_fee
+    assert unit == "cluster-month"
 
 
 def _seed_customer_contract(s) -> tuple[Customer, Contract]:
@@ -125,7 +182,7 @@ def test_provisioning_period_emits_management_setup_addon(sync_session):
     lines = _emit(s, datetime(2026, 4, 1), datetime(2026, 5, 1), {"CO-001"})
 
     # We expect:
-    #   management fee: 9 vm-month × 500 = 4500
+    #   management fee: Mellan (2 worker groups) = 8133.40
     #   controller setup: 1 × 1000
     #   worker setup (initial 2 groups): 2 × 2000 = 4000
     #   addon jupyterhub: 1 × 3450
@@ -138,9 +195,9 @@ def test_provisioning_period_emits_management_setup_addon(sync_session):
     mgmt = by_label["Cluster management fee"].split(";")
     assert mgmt[0] == "Acme"
     assert mgmt[1] == "CO-001"
-    assert mgmt[4] == "9"
-    assert mgmt[5] == "vm-month"
-    assert mgmt[6] == "4500"
+    assert mgmt[4] == "1"
+    assert mgmt[5] == "cluster-month"
+    assert mgmt[6] == "8133"
 
     ctrl = by_label["Controller setup fee"].split(";")
     assert ctrl[4] == "1"
@@ -197,9 +254,9 @@ def test_subsequent_period_emits_management_and_addon_only(sync_session):
     mgmt = next(
         line.split(";") for line in lines if line.split(";")[3] == "Cluster management fee"
     )
-    assert mgmt[4] == "6"
-    assert mgmt[5] == "vm-month"
-    assert mgmt[6] == "3000"  # 6 × 500
+    assert mgmt[4] == "1"
+    assert mgmt[5] == "cluster-month"
+    assert mgmt[6] == "5227"
 
 
 def test_resize_period_emits_expansion_fee(sync_session):
@@ -292,8 +349,38 @@ def test_per_contract_override_applies(sync_session):
     mgmt = next(
         line.split(";") for line in lines if line.split(";")[3] == "Cluster management fee"
     )
-    # 6 VMs × 400 (override) = 2400
-    assert mgmt[6] == "2400"
+    # An override replaces the package fee for the cluster as a whole.
+    assert mgmt[6] == "400"
+
+
+def test_management_fee_extrapolates_beyond_largest_package(sync_session):
+    s = sync_session
+    _, contract = _seed_customer_contract(s)
+    s.add(
+        TenantCluster(
+            contract_id=contract.id,
+            name="Acme large",
+            slug="acme-large",
+            api_url="https://x",
+            ca_bundle="dummy",
+            openbao_mount="kubernetes/tenant-acme-large",
+            worker_groups=7,
+            initial_worker_groups=7,
+            provisioned_at=datetime(2026, 3, 10),
+            created_by_sub="admin@test",
+        )
+    )
+    s.commit()
+
+    lines = _emit(s, datetime(2026, 4, 1), datetime(2026, 5, 1), {"CO-001"})
+
+    mgmt = next(
+        line.split(";") for line in lines if line.split(";")[3] == "Cluster management fee"
+    )
+    # XXXL fee 19,057.40 plus one 2,806 SEK worker-group increment.
+    assert mgmt[4] == "1"
+    assert mgmt[5] == "cluster-month"
+    assert mgmt[6] == "21863"
 
 
 def test_disabled_addon_not_billed_after_disable(sync_session):

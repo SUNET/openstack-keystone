@@ -396,6 +396,42 @@ def _price_after_override_and_rebate(
     return unit_price
 
 
+def _cluster_management_fee(prices: list, worker_groups: int) -> tuple[Decimal, str]:
+    """Return the package fee for a cluster's worker-group count.
+
+    Published Kubernetes packages cover one through six worker groups. Larger
+    clusters use the configured increment from the largest published package.
+    VM and volume costs are intentionally not part of this fee: they remain
+    metered products so flavor and storage changes affect the invoice.
+    """
+    package_prices = [
+        (int(price.metadata_value), price)
+        for price in prices
+        if price.resource_type == "cluster_management_fee"
+        and price.metadata_field == "worker_groups"
+        and price.metadata_value is not None
+        and price.metadata_value.isdecimal()
+    ]
+    if not package_prices:
+        raise BillingGenerationError("No managed-cluster package prices configured")
+
+    package_prices.sort(key=lambda item: item[0])
+    for package_worker_groups, price in package_prices:
+        if worker_groups == package_worker_groups:
+            return price.unit_price, price.unit
+
+    largest_worker_groups, largest_package = package_prices[-1]
+    if worker_groups < package_prices[0][0]:
+        raise BillingGenerationError(
+            f"No managed-cluster package price for {worker_groups} worker groups"
+        )
+    increment = _find_price(prices, "cluster_management_fee_increment", {})
+    if increment is None:
+        raise BillingGenerationError("No managed-cluster package increment configured")
+    extra_groups = worker_groups - largest_worker_groups
+    return largest_package.unit_price + extra_groups * increment.unit_price, largest_package.unit
+
+
 def _emit_synthetic_cluster_lines(
     sync_session: SyncSession,
     period_start: datetime,
@@ -436,29 +472,28 @@ def _emit_synthetic_cluster_lines(
         contract_id = cluster.contract_id
         project_label = f"managed-cluster:{cluster.slug}"
 
-        # 1. Per-VM management fee: full month, never prorated.
-        mgmt = _find_price(prices, "cluster_management_fee", {})
-        if mgmt is not None:
-            qty = Decimal(3 + 3 * cluster.worker_groups)
-            unit_price = _price_after_override_and_rebate(
-                base_price=mgmt.unit_price,
-                resource_type="cluster_management_fee",
-                contract_id=contract_id,
-                contract_overrides=contract_overrides,
-                rebates=rebates,
-            )
-            cost = qty * unit_price
-            writer.writerow(
-                [
-                    customer_name,
-                    cn,
-                    project_label,
-                    "Cluster management fee",
-                    f"{qty:.0f}",
-                    mgmt.unit,
-                    round(cost),
-                ]
-            )
+        # 1. Package management fee: full month, never prorated.
+        management_fee, management_unit = _cluster_management_fee(
+            prices, cluster.worker_groups
+        )
+        unit_price = _price_after_override_and_rebate(
+            base_price=management_fee,
+            resource_type="cluster_management_fee",
+            contract_id=contract_id,
+            contract_overrides=contract_overrides,
+            rebates=rebates,
+        )
+        writer.writerow(
+            [
+                customer_name,
+                cn,
+                project_label,
+                "Cluster management fee",
+                "1",
+                management_unit,
+                round(unit_price),
+            ]
+        )
 
         # 2. Initial setup fee: only in the period the cluster was provisioned.
         if period_start <= cluster.provisioned_at < period_end:
@@ -1043,6 +1078,7 @@ def generate_billing_csv(
         # not metered by Gnocchi; querying them only yields 404s.
         SYNTHETIC_RESOURCE_TYPES = {
             "cluster_management_fee",
+            "cluster_management_fee_increment",
             "cluster_setup_fee",
             "cluster_addon_fee",
         }
