@@ -196,7 +196,12 @@ function formatApiError(detail) {
             const loc = Array.isArray(e.loc)
                 ? e.loc.filter((p) => p !== "body").join(".")
                 : "";
-            return loc ? `${loc}: ${e.msg}` : (e.msg || JSON.stringify(e));
+            const errorPrefix = "Value error, ";
+            const rawMessage = e.msg || JSON.stringify(e);
+            const message = rawMessage.startsWith(errorPrefix)
+                ? rawMessage.slice(errorPrefix.length)
+                : rawMessage;
+            return loc ? `${loc}: ${message}` : message;
         }).join("; ");
     }
     return JSON.stringify(detail);
@@ -701,6 +706,10 @@ function renderCreateProject(contractNumber) {
     clear(app);
     app.className = "page narrow-form";
     const contractInfo = currentUser.contracts.find(c => c.contract_number === contractNumber);
+    const customerDomain = contractInfo?.customer?.domain;
+    const qualifiedExample = customerDomain
+        ? ` For example, my-project becomes my-project.${customerDomain}.`
+        : "";
     const cn = encodeURIComponent(contractNumber);
 
     app.appendChild(bc(
@@ -718,7 +727,7 @@ function renderCreateProject(contractNumber) {
         h("h3", {}, "Identity"),
         h("label", { htmlFor: "name" }, "Project name"),
         h("input", { id: "name", name: "name", type: "text", required: true, maxlength: "64", pattern: "[a-z0-9]([a-z0-9-]*[a-z0-9])?", placeholder: "my-project", className: "mono" }),
-        h("p", { className: "hint" }, "Lowercase, digits and hyphens only — must start and end with a letter or digit. Max 64 characters. Cannot be changed later."),
+        h("p", { className: "hint" }, `Enter only the project name — do not append a domain. The customer domain is added automatically.${qualifiedExample} Lowercase letters, digits and hyphens only — must start and end with a letter or digit. Max 64 characters. Cannot be changed later.`),
         h("label", { htmlFor: "desc" }, "Description"),
         h("textarea", { id: "desc", name: "description", className: "sans", placeholder: "What is this project for?" }),
         h("label", { htmlFor: "contract" }, "Contract"),
@@ -2882,10 +2891,12 @@ function renderClusterSetupHelp() {
 
     app.appendChild(sub("3. Apply the managed portal-access base"));
     app.appendChild(h("p", {},
-        "Apply the reviewed base from the private customer repository. Do not create ad hoc service accounts or RBAC:"));
+        "Apply the reviewed base from the private customer repository. Set and pass the intended Kubernetes context explicitly on every kubectl command. Do not create ad hoc service accounts or RBAC:"));
     app.appendChild(codeBlock(
         "kubeconfig='<path-to-admin-kubeconfig>'\n" +
-        "kubectl --kubeconfig \"$kubeconfig\" apply \\\n" +
+        "context='<admin-context>'\n" +
+        "kubectl --kubeconfig \"$kubeconfig\" \\\n" +
+        "  --context \"$context\" apply \\\n" +
         "  -k k8s-manifests/portal-access"
     ));
 

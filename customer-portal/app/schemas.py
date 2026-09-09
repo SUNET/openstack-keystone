@@ -144,6 +144,7 @@ class ContractRebateRequest(BaseModel):
 
 
 _PROJECT_USER_RE = re.compile(r"^[a-zA-Z0-9._+\-:/@]{1,254}$")
+_PROJECT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PROJECT_DESCRIPTION_MAX = 1024
 _PROJECT_USERS_MAX = 256
 
@@ -245,10 +246,21 @@ class QuotaResponseSpec(BaseModel):
 
 
 class CreateProjectRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+    name: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=_PROJECT_DESCRIPTION_MAX)
     users: list[str] = Field(default_factory=list, max_length=_PROJECT_USERS_MAX)
     quotas: QuotaSpec = Field(default_factory=QuotaSpec)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not _PROJECT_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "enter the project name only, without a domain; the customer domain is "
+                "added automatically. Use lowercase letters, digits, and hyphens, and "
+                "start and end with a letter or digit"
+            )
+        return value
 
     @field_validator("users")
     @classmethod

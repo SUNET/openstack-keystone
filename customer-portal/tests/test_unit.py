@@ -33,6 +33,7 @@ from app.schemas import (
     AddonRequestPayload,
     BackupRequestPayload,
     CreateClusterRequest,
+    CreateProjectRequest,
     ProjectResponse,
     ResizeRequestPayload,
     _size_label,
@@ -203,6 +204,21 @@ def test_create_cluster_request_slug_regex() -> None:
         CreateClusterRequest(slug="UPPER", **base)
     with pytest.raises(ValidationError):
         CreateClusterRequest(slug="trailing-", **base)
+
+
+@pytest.mark.parametrize("name", ["a", "my-project", "project123"])
+def test_create_project_request_accepts_unqualified_names(name: str) -> None:
+    assert CreateProjectRequest(name=name).name == name
+
+
+def test_create_project_request_explains_that_domains_are_automatic() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        CreateProjectRequest(name="fidus.sunet.se")
+
+    message = exc_info.value.errors()[0]["msg"]
+    assert "without a domain" in message
+    assert "customer domain is added automatically" in message
+    assert "pattern" not in message.lower()
 
 
 def test_oidc_sub_label_hash_is_label_safe() -> None:

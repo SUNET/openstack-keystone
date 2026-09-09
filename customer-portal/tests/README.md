@@ -13,7 +13,24 @@ Two layers of testing live in this directory:
 
 ## Running the local suite
 
-### Prereqs
+### In code-box
+
+Code-box includes PostgreSQL server and client tools. Run the complete suite
+in a throwaway cluster with:
+
+```bash
+pg_virtualenv bash -c '
+    createdb portal_test &&
+    env PORTAL_TEST_DB_URL=postgresql+asyncpg:///portal_test \
+        pytest
+'
+```
+
+`pg_virtualenv` creates the cluster before the command and removes it
+afterward. The hostless database URL uses the temporary Unix socket and port
+provided by `pg_virtualenv`.
+
+### With Docker
 
 A Postgres 16 reachable at `localhost:55432` with database `portal_test`,
 user `portal`, password `portal`. Easiest way:

@@ -87,6 +87,23 @@ def test_multisection_workflows_use_one_submit_form() -> None:
     assert js.count('const workflow = h("form", { onsubmit:') >= 3
 
 
+def test_create_project_explains_automatic_domain_qualification() -> None:
+    js = APP_JS.read_text()
+
+    assert "Enter only the project name — do not append a domain." in js
+    assert "The customer domain is added automatically." in js
+    assert "my-project becomes my-project.${customerDomain}" in js
+    assert 'const errorPrefix = "Value error, ";' in js
+
+
+def test_documented_kubectl_command_requires_an_explicit_context() -> None:
+    js = APP_JS.read_text()
+
+    assert "Set and pass the intended Kubernetes context explicitly" in js
+    assert "context='<admin-context>'" in js
+    assert '  --context \\"$context\\" apply' in js
+
+
 def test_route_requests_abort_obsolete_renderers() -> None:
     js = APP_JS.read_text()
 

@@ -252,11 +252,13 @@ The operator requires:
 2. **RBAC configured** - ServiceAccount with cluster-wide access to the CRDs
 3. **Secrets** - See below
 
-Example deployment using kustomize:
+Example deployment using kustomize. Set and pass the intended Kubernetes
+context explicitly on every `kubectl` command:
 
 ```bash
 # From a deployment overlay
-kubectl apply -k overlays/test/
+context='<test-cluster-context>'
+kubectl --context "$context" apply -k overlays/test/
 ```
 
 ### Secrets
