@@ -39,6 +39,22 @@ class TestRateLimiter:
 
         assert max_active <= 2
 
+    def test_nested_acquire_reuses_thread_slot(self):
+        limiter = RateLimiter(max_concurrent=1, requests_per_second=0)
+        completed = threading.Event()
+
+        def worker():
+            with limiter.acquire():
+                with limiter.acquire():
+                    completed.set()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        assert completed.wait(timeout=1)
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
     def test_enforces_rate_limit(self):
         # 10 requests per second = 100ms between requests
         limiter = RateLimiter(max_concurrent=10, requests_per_second=10)

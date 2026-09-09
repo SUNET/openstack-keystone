@@ -5,7 +5,7 @@ triggers:
   cron: "@daily"
 
 environment_variables:
-  OPERATOR_VERSION: "0.1.6"
+  OPERATOR_VERSION: "0.1.7"
   PORTAL_VERSION: "0.1.21"
 
 extra_jobs:

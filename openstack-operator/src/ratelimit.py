@@ -4,8 +4,8 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 from metrics import RATE_LIMIT_WAIT_SECONDS
 
@@ -16,7 +16,8 @@ class RateLimiter:
     """Thread-safe rate limiter using semaphore and token bucket.
 
     Limits both concurrent requests and requests per second to prevent
-    overwhelming OpenStack APIs.
+    overwhelming OpenStack APIs. Acquisitions are reentrant within a thread
+    because decorated client methods can call other decorated methods.
     """
 
     def __init__(
@@ -34,6 +35,7 @@ class RateLimiter:
         self._min_interval = 1.0 / requests_per_second if requests_per_second > 0 else 0
         self._last_call_time = 0.0
         self._lock = threading.Lock()
+        self._local = threading.local()
         self._max_concurrent = max_concurrent
         self._requests_per_second = requests_per_second
 
@@ -51,8 +53,12 @@ class RateLimiter:
             with rate_limiter.acquire():
                 # make API call
         """
+        depth = getattr(self._local, "depth", 0)
+        outermost = depth == 0
         wait_start = time.monotonic()
-        self._semaphore.acquire()
+        if outermost:
+            self._semaphore.acquire()
+        self._local.depth = depth + 1
         try:
             # Enforce minimum interval between requests
             with self._lock:
@@ -72,7 +78,11 @@ class RateLimiter:
 
             yield
         finally:
-            self._semaphore.release()
+            self._local.depth -= 1
+            if self._local.depth == 0:
+                del self._local.depth
+            if outermost:
+                self._semaphore.release()
 
     def __repr__(self) -> str:
         return (
